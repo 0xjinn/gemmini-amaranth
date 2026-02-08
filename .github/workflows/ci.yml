@@ -28,8 +28,22 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install Verilator
-        run: sudo apt-get update && sudo apt-get install -y verilator
+      - name: Cache Verilator
+        id: cache-verilator
+        uses: actions/cache@v4
+        with:
+          path: /opt/verilator
+          key: verilator-5
+
+      - name: Build Verilator
+        if: steps.cache-verilator.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update && sudo apt-get install -y autoconf help2man perl make flex bison g++ libfl2 libfl-dev
+          git clone https://github.com/verilator/verilator.git --depth 1 /tmp/verilator
+          cd /tmp/verilator && autoconf && ./configure --prefix=/opt/verilator && make -j$(nproc) && make install
+
+      - name: Add Verilator to PATH
+        run: echo "/opt/verilator/bin" >> $GITHUB_PATH
 
       - name: Install package
         run: pip install -e ".[sim]"
