@@ -78,7 +78,9 @@ def cocotb_run(dut, config=None, module=None, sim="verilator", testfilter=None, 
         os.environ["COCOTB_TEST_FILTER"] = testfilter
 
     if sim == "verilator":
-        build_args += ["--Wno-fatal", "--quiet"]
+        build_args += ["--Wno-fatal"]
+        if not os.getenv("CI"):
+            build_args += ["--quiet"]
     if waves and sim == "verilator":
         build_args += ["--trace-fst"]
 
