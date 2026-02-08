@@ -1,0 +1,17 @@
+build/
+chisel/berkeley-hardfloat/
+chisel/cde/
+chisel/target/
+chisel/project/target/
+chisel/project/.bloop/
+chisel/project/metals.sbt
+chisel/.metals/
+chisel/.bsp/
+sim_build/
+__pycache__/
+*.pyc
+*.egg-info/
+*.vcd
+*.fst
+.java-version
+.DS_Store
