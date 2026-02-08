@@ -1,6 +1,6 @@
-import json
+import hashlib
 import os
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 
 import amaranth as am
@@ -12,56 +12,114 @@ from amaranth_soc import csr
 from gemmini_amaranth.bus import AXI4, BurstType, AXI4Lite, AXI4LiteCSRBridge
 
 
+_WRAPPER_FIELDS = frozenset({"vaddr_width", "source_width", "csr_data_width"})
+
+
 @dataclass(frozen=True)
 class GemminiConfig:
-    dim: int = 16
+    # generation parameters (mirror build_gen_params / GemminiConfigs.scala)
+    mesh_rows: int = 16
+    mesh_columns: int = 16
+    tile_rows: int = 1
+    tile_columns: int = 1
+    dtype: str = "int8"
+    dataflow: str | None = None
+    sp_capacity_kb: int = 256
+    acc_capacity_kb: int = 64
+    sp_banks: int = 4
+    acc_banks: int = 2
+    dma_maxbytes: int | None = None
     dma_buswidth: int = 128
-    write_data_width: int = 512
+    max_in_flight_mem_reqs: int | None = None
+    no_training_convs: bool = False
+    no_max_pool: bool = False
+    no_nonlinear_activations: bool = False
+    preset: str | None = None
+
+    # wrapper config
     vaddr_width: int = 32
     source_width: int = 4
     csr_data_width: int = 32
-    verilog_dir: str = "verilog"
     csr_offsets = {"status": 0x00}
 
-    @classmethod
-    def fromdict(cls, d): return cls(**d)
+    @property
+    def input_width(self):
+        from gemmini_amaranth.generate import DTYPE_MAP
+        dt = DTYPE_MAP[self.dtype]
+        if dt["inputTypeFamily"] == "float":
+            return int(dt["inputExpWidth"]) + int(dt["inputSigWidth"])
+        return int(dt["inputWidth"])
+
+    @property
+    def acc_width(self):
+        from gemmini_amaranth.generate import DTYPE_MAP
+        dt = DTYPE_MAP[self.dtype]
+        if dt["inputTypeFamily"] == "float":
+            return int(dt["accExpWidth"]) + int(dt["accSigWidth"])
+        return int(dt["accWidth"])
+
+    @property
+    def input_bytes(self): return self.input_width // 8
+
+    @property
+    def acc_bytes(self): return self.acc_width // 8
+
+    @property
+    def block_rows(self): return self.mesh_rows * self.tile_rows
+
+    @property
+    def block_cols(self): return self.mesh_columns * self.tile_columns
+
+    @property
+    def sp_bank_entries(self):
+        return self.sp_capacity_kb * 1024 * 8 // (self.sp_banks * self.block_cols * self.input_width)
+
+    @property
+    def acc_bank_entries(self):
+        return self.acc_capacity_kb * 1024 * 8 // (self.acc_banks * self.block_cols * self.acc_width)
+
+    @property
+    def sp_rows(self): return self.sp_banks * self.sp_bank_entries
+
+    @property
+    def acc_rows(self): return self.acc_banks * self.acc_bank_entries
+
+    @property
+    def beat_bytes(self): return self.dma_buswidth // 8
+
+    @property
+    def dma_maxbytes_resolved(self): return self.dma_maxbytes or 64
+
+    @property
+    def max_in_flight_mem_reqs_resolved(self): return self.max_in_flight_mem_reqs or 16
+
+    @property
+    def write_data_width(self):
+        return self.acc_width * self.mesh_columns * self.tile_columns
 
     @classmethod
-    def from_json(cls, path):
-        with open(path) as f:
-            j = json.load(f)
-        return cls(dim=j["dim"], dma_buswidth=j["dmaBuswidth"],
-                   write_data_width=j["writeDataWidth"], vaddr_width=j["vaddrWidth"],
-                   source_width=j["readReqPacket"]["sourceWidth"])
+    def fromdict(cls, d):
+        obj = object.__new__(cls)
+        for k, v in d.items():
+            object.__setattr__(obj, k, v)
+        return obj
 
-    @classmethod
-    def generate(cls, *, build_dir=None, chisel_dir=None, verbose=False, **kwargs):
-        """Generate Chisel Verilog and return a matching :class:`GemminiConfig`.
+    def __post_init__(self):
+        from gemmini_amaranth.generate import build_gen_params, generate_verilog
 
-        Caches output under ``build_dir/<hash>/`` so repeated calls with the
-        same parameters skip regeneration.  Set ``ALWAYS=1`` env var or pass
-        ``always=True`` (in *kwargs*) to force rebuild.
-        """
-        from gemmini_amaranth.generate import build_gen_params, config_hash, generate_verilog
+        always = bool(int(os.environ.get("ALWAYS", "0")))
+        output_dir = self._build_dir()
 
-        always = kwargs.pop("always", bool(int(os.environ.get("ALWAYS", "0"))))
-        gen_params = build_gen_params(**kwargs)
-        cache_key = config_hash(gen_params)
+        if always or not any(output_dir.glob("*.v")):
+            gen_params = build_gen_params(
+                **{k: v for k, v in asdict(self).items() if k not in _WRAPPER_FIELDS and v is not None})
+            generate_verilog(gen_params, output_dir)
 
-        if build_dir is None:
-            build_dir = Path(__file__).resolve().parent.parent / "build"
-        output_dir = Path(build_dir) / cache_key
-        config_json = output_dir / "gemmini_config.json"
+    def _build_dir(self):
+        h = hashlib.sha256(str(asdict(self)).encode()).hexdigest()[:12]
+        return Path(__file__).resolve().parent.parent / "build" / h
 
-        if always or not config_json.exists():
-            generate_verilog(gen_params, output_dir, chisel_dir, verbose)
-
-        cfg = cls.from_json(config_json)
-        return cls(dim=cfg.dim, dma_buswidth=cfg.dma_buswidth,
-                   write_data_width=cfg.write_data_width, vaddr_width=cfg.vaddr_width,
-                   source_width=cfg.source_width, verilog_dir=str(output_dir))
-
-    def get_verilog_sources(self): return sorted(Path(self.verilog_dir).glob("*.v"))
+    def get_verilog_sources(self): return sorted(self._build_dir().glob("*.v"))
 
 
 CMD_LAYOUT = data.StructLayout({"funct": 7, "rs1": 64, "rs2": 64, "xd": 1, "rd": 5})
@@ -69,13 +127,7 @@ RESP_LAYOUT = data.StructLayout({"rd": 5, "data": 64})
 
 
 class Gemmini(Component):
-    def __init__(self, config=None, **kwargs):
-        if config is None and not kwargs:
-            config = GemminiConfig()
-        elif config is None:
-            config = GemminiConfig.generate(**kwargs)
-        elif kwargs:
-            raise TypeError("Pass either a GemminiConfig or keyword arguments, not both")
+    def __init__(self, config):
         self.config = config
         csrs = csr.Builder(addr_width=1, data_width=config.csr_data_width)
         self.status_reg = csrs.add("status",
@@ -117,7 +169,7 @@ class Gemmini(Component):
         wresp_valid, wresp_ready = am.Signal(), am.Signal()
         wresp_lg_size, wresp_source = am.Signal(3), am.Signal(cfg.source_width)
 
-        m.submodules.gemmini = am.Instance("Gemmini",
+        m.submodules.gemmini = am.Instance("GemminiChisel",
             i_clock=am.ClockSignal(), i_reset=am.ResetSignal(),
             o_io_cmd_ready=cmd_ready, i_io_cmd_valid=self.cmd.valid,
             i_io_cmd_bits_inst_funct=self.cmd.payload.funct,
@@ -219,8 +271,7 @@ class Gemmini(Component):
 
 if __name__ == "__main__":
     from amaranth.back import verilog
-    config = GemminiConfig()
-    g = Gemmini(config)
+    g = Gemmini(GemminiConfig())
     with open("gemmini.v", "w") as f:
         f.write(verilog.convert(g, name="Gemmini", emit_src=False))
     print("Generated gemmini.v")

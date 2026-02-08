@@ -71,9 +71,6 @@ def cocotb_run(dut, config=None, module=None, sim="verilator", testfilter=None, 
     src = config_dir / f"{top}.v"
 
     if not src.exists() or always:
-        if config is not None:
-            with open(config_dir / "config.json", "w") as f:
-                json.dump(asdict(config), f, indent=4)
         with open(src, "w") as f:
             f.write(convert(dut, name=top, emit_src=False))
 
@@ -86,6 +83,8 @@ def cocotb_run(dut, config=None, module=None, sim="verilator", testfilter=None, 
         build_args += ["--trace-fst"]
 
     if config is not None:
+        with open(config_dir / "config.json", "w") as f:
+            json.dump(asdict(config), f, indent=4)
         test_args += [f"+config_dir={config_dir}"]
 
     module = inspect.getmodule(inspect.stack()[1].frame).__name__ if module is None else module

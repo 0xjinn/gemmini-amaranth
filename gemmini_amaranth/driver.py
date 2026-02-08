@@ -79,8 +79,8 @@ async def stream_producer(clk, queue, ready, valid, payload, timeout=10000, rand
 
 # DMA interface — services 4-channel DMA packet protocol
 class GemminiDMAInterface:
-    def __init__(self, dut, mem_size=4 * 1024 * 1024, rand=False):
-        self.dut, self.memory, self.rand = dut, np.zeros(mem_size, dtype=np.uint8), rand
+    def __init__(self, dut, config, mem_size=4 * 1024 * 1024, rand=False):
+        self.dut, self.config, self.memory, self.rand = dut, config, np.zeros(mem_size, dtype=np.uint8), rand
         self.clock = Clock(dut.clock, 10, unit="ns")
         self.read_req_queue, self.read_resp_queue = Queue(), Queue()
         self.write_req_queue, self.write_resp_queue = Queue(), Queue()
@@ -114,7 +114,7 @@ class GemminiDMAInterface:
         self.dut.reset.value = 0
 
     async def memory_read_process(self):
-        beat_bytes = 16
+        beat_bytes = self.config.beat_bytes
         while True:
             req = await self.read_req_queue.get()
             lg_size, vaddr, source = int(req["lg_size"]), int(req["vaddr"]), int(req["source"])
@@ -129,7 +129,7 @@ class GemminiDMAInterface:
                     "lg_size": lg_size, "last": int(i == num_beats - 1)})
 
     async def memory_write_process(self):
-        beat_bytes, byte_offset, last_vaddr = 16, 0, None
+        beat_bytes, byte_offset, last_vaddr = self.config.beat_bytes, 0, None
         while True:
             req = await self.write_req_queue.get()
             vaddr, is_last, data_int = int(req["vaddr"]), int(req["last"]), int(req["data"])
@@ -449,11 +449,10 @@ def parse_gemmini_asm(text, addr_bits=12):
 
 # high-level runner (ties DMA + commands together)
 class GemminiRunner:
-    def __init__(self, dut, dim=16, mem_size=4 * 1024 * 1024, sp_banks=4, sp_bank_entries=1024,
-                 acc_banks=2, acc_bank_entries=512, rand=False):
-        self.dut, self.dim = dut, dim
-        self.dma = GemminiDMAInterface(dut, mem_size, rand=rand)
-        self.addr_bits = _log2ceil(max(sp_banks * sp_bank_entries, acc_banks * acc_bank_entries))
+    def __init__(self, dut, config, mem_size=4 * 1024 * 1024, rand=False):
+        self.dut, self.config = dut, config
+        self.dma = GemminiDMAInterface(dut, config, mem_size, rand=rand)
+        self.addr_bits = _log2ceil(max(config.sp_rows, config.acc_rows))
 
     async def init(self): await self.dma.init()
 
@@ -476,8 +475,8 @@ class GemminiRunner:
 class GemminiProgram:
     MVIN_SCALE_IDENTITY = ACC_SCALE_IDENTITY = 0x3F800000
 
-    def __init__(self, dim=16, input_bytes=1, acc_bytes=4):
-        self.dim, self.input_bytes, self.acc_bytes = dim, input_bytes, acc_bytes
+    def __init__(self, config):
+        self.config = config
 
     def _ceildiv(self, a, b): return (a + b - 1) // b
 
@@ -486,7 +485,7 @@ class GemminiProgram:
                   A_scale=None, B_scale=None, D_scale=None, acc_scale=None,
                   full_c=False, low_d=True, a_transpose=False, b_transpose=False,
                   repeating_bias=False):
-        dim, ib, ab = self.dim, self.input_bytes, self.acc_bytes
+        dim, ib, ab = self.config.block_rows, self.config.input_bytes, self.config.acc_bytes
         if A_stride is None: A_stride = K
         if B_stride is None: B_stride = N
         if C_stride is None: C_stride = N
@@ -566,7 +565,7 @@ class GemminiProgram:
                   kernel_dim, stride, padding, input_addr, weights_addr, output_addr,
                   bias_addr=None, activation=GemminiISA.ACT_NONE, acc_scale=None,
                   pool_size=0, pool_stride=0, pool_padding=0):
-        ib, ab = self.input_bytes, self.acc_bytes
+        ib, ab = self.config.input_bytes, self.config.acc_bytes
         if acc_scale is None: acc_scale = self.ACC_SCALE_IDENTITY
         no_bias = bias_addr is None
         if no_bias: bias_addr = 1
@@ -687,7 +686,7 @@ class GemminiProgram:
     def _compute_conv_tile_factors(self, batch_size, out_row_dim, out_col_dim, out_channels,
                                    kernel_row, kernel_col, in_channels, stride, downsample,
                                    pool_size, pool_stride):
-        dim, max_sp, max_acc = self.dim, 4 * 1024 // 2, 2 * 512 // 2
+        dim, max_sp, max_acc = self.config.block_rows, self.config.sp_rows // 2, self.config.acc_rows // 2
         def _spad(b, or_, oc_, och, kr, kc, kch):
             ir = (or_ + kr - 1) * stride if not downsample else or_
             ic = (oc_ + kc - 1) * stride if not downsample else oc_
@@ -716,7 +715,7 @@ class GemminiProgram:
         return tuple(args)
 
     def _compute_tile_factors(self, M, N, K):
-        dim, sp_rows, acc_rows = self.dim, 4 * 1024, 2 * 512
+        dim, sp_rows, acc_rows = self.config.block_rows, self.config.sp_rows, self.config.acc_rows
         ti, tj, tk = self._ceildiv(M, dim), self._ceildiv(N, dim), self._ceildiv(K, dim)
         while True:
             if (ti * tk + tj * tk) * dim <= sp_rows and ti * tj * dim <= acc_rows: break
@@ -741,6 +740,25 @@ class GemminiProgram:
 
 if __name__ == "__main__":
     import argparse, json as _json
+    from types import SimpleNamespace
+
+    def _cli_config(dim, input_bytes, acc_bytes, sp_capacity_kb=256, acc_capacity_kb=64,
+                    sp_banks=4, acc_banks=2, dma_buswidth=128):
+        """Build a lightweight config namespace for CLI use (no Verilog generation)."""
+        input_width = input_bytes * 8
+        acc_width = acc_bytes * 8
+        block_rows = block_cols = dim
+        return SimpleNamespace(
+            block_rows=block_rows, block_cols=block_cols,
+            input_bytes=input_bytes, acc_bytes=acc_bytes,
+            input_width=input_width, acc_width=acc_width,
+            sp_banks=sp_banks, acc_banks=acc_banks,
+            sp_bank_entries=sp_capacity_kb * 1024 * 8 // (sp_banks * block_cols * input_width),
+            acc_bank_entries=acc_capacity_kb * 1024 * 8 // (acc_banks * block_cols * acc_width),
+            sp_rows=sp_banks * (sp_capacity_kb * 1024 * 8 // (sp_banks * block_cols * input_width)),
+            acc_rows=acc_banks * (acc_capacity_kb * 1024 * 8 // (acc_banks * block_cols * acc_width)),
+            beat_bytes=dma_buswidth // 8,
+        )
 
     parser = argparse.ArgumentParser(description="Gemmini instruction generator")
     sub = parser.add_subparsers(dest="command")
@@ -789,7 +807,8 @@ if __name__ == "__main__":
         a_addr = args.a_addr
         b_addr = args.b_addr if args.b_addr is not None else a_addr + args.M * args.K * ib
         c_addr = args.c_addr if args.c_addr is not None else b_addr + args.K * args.N * ib
-        prog = GemminiProgram(dim=args.dim, input_bytes=ib, acc_bytes=args.acc_bytes)
+        cfg = _cli_config(args.dim, ib, args.acc_bytes)
+        prog = GemminiProgram(cfg)
         instrs = prog.matmul_ws(args.M, args.N, args.K, a_addr, b_addr, c_addr,
                                 D_addr=args.d_addr)
         if args.json:
@@ -804,7 +823,8 @@ if __name__ == "__main__":
 
     elif args.command == "conv":
         ib = args.input_bytes
-        prog = GemminiProgram(dim=args.dim, input_bytes=ib, acc_bytes=args.acc_bytes)
+        cfg = _cli_config(args.dim, ib, args.acc_bytes)
+        prog = GemminiProgram(cfg)
         in_size = args.batch * args.in_h * args.in_w * args.in_c * ib
         w_size = args.kernel ** 2 * args.in_c * args.out_c * ib
         input_addr = args.input_addr

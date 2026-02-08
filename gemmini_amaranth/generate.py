@@ -401,7 +401,8 @@ Example usage:
     p.add_argument("--no-training-convs", action="store_true")
     p.add_argument("--no-max-pool", action="store_true")
     p.add_argument("--no-nonlinear-activations", action="store_true")
-    p.add_argument("--output-dir", type=str, default="build", help="Output directory (default: build/)")
+    p.add_argument("--output-dir", type=str, default=None,
+                    help="Output directory (default: build/<config-hash>)")
     p.add_argument("--chisel-dir", type=str, default=None, help="Chisel source directory")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--verbose", action="store_true")
@@ -437,14 +438,18 @@ def cli_main(argv=None):
     gen_params = build_gen_params(**cli_kwargs)
     validate_params(gen_params)
 
-    # Resolve output_dir relative to cwd (not package root)
-    output_dir = Path(args.output_dir).resolve()
+    if args.output_dir is not None:
+        output_dir = Path(args.output_dir).resolve()
+    else:
+        output_dir = (Path.cwd() / "build" / config_hash(gen_params)).resolve()
+
     sbt_cmd = build_sbt_command(gen_params, output_dir)
 
     if args.dry_run:
         print("Dry run - would execute:")
         print(f"  cd {chisel_dir}")
         print(f"  {sbt_cmd}")
+        print(f"  output: {output_dir}")
         return
 
     generate_verilog(gen_params, output_dir, chisel_dir, args.verbose)

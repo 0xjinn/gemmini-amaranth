@@ -1,8 +1,8 @@
 """Cocotb tests: Gemmini through AXI4 wrapper — matmul + performance counters."""
 
 import os
-from pathlib import Path
 
+import pytest
 import cocotb
 import numpy as np
 from cocotb.triggers import RisingEdge, ReadOnly, ReadWrite
@@ -12,11 +12,9 @@ from gemmini_amaranth.gemmini import Gemmini, GemminiConfig
 from gemmini_amaranth.driver import GemminiISA, sp_addr, acc_addr, GARBAGE_ADDR, CounterEvent, CounterExternal
 from test.helpers import cocotb_run, cocotb_init, GemminiAxiInterface
 
-DIM = 16
 ADDR_A, ADDR_B, ADDR_OUT = 0x1000, 0x2000, 0x4000
 _MASK64 = (1 << 64) - 1
 ALWAYS = int(os.getenv("ALWAYS", 0))
-BUILD_DIR = str(Path(__file__).parent / ".." / "build")
 
 # CMD_LAYOUT: funct[7] | rs1[64] | rs2[64] | xd[1] | rd[5] (LSB-first, 141 bits)
 def _pack_cmd(funct, rs1, rs2, xd=0, rd=0):
@@ -56,42 +54,43 @@ def _load(mem, addr, mat, dtype=np.int8):
     mem[addr:addr + len(flat)] = flat
 
 async def setup(dut, with_resp=False, rand=False):
-    await cocotb_init(dut, GemminiConfig)
+    config = await cocotb_init(dut, GemminiConfig)
     axi = GemminiAxiInterface(dut, rand=rand)
     await axi.init()
     dut.resp__ready.value = 1
     if with_resp:
         resp_q = Queue()
         cocotb.start_soon(resp_sink(dut, resp_q))
-        return axi, resp_q
-    return axi
+        return config, axi, resp_q
+    return config, axi
 
-async def run_matmul(dut, axi, A=None, B=None):
+async def run_matmul(dut, axi, dim, A=None, B=None):
     rng = np.random.default_rng(123)
-    if A is None: A = rng.integers(-5, 5, size=(DIM, DIM), dtype=np.int8)
-    if B is None: B = rng.integers(-5, 5, size=(DIM, DIM), dtype=np.int8)
+    if A is None: A = rng.integers(-5, 5, size=(dim, dim), dtype=np.int8)
+    if B is None: B = rng.integers(-5, 5, size=(dim, dim), dtype=np.int8)
     _load(axi.memory, ADDR_A, A)
     _load(axi.memory, ADDR_B, B)
     instrs = [
         GemminiISA.config_ex(dataflow=1, acc_scale=0x3F800000),
-        GemminiISA.config_ld(stride=DIM, scale=0x3F800000),
-        GemminiISA.mvin(ADDR_A, sp_addr(0), DIM, DIM),
-        GemminiISA.mvin(ADDR_B, sp_addr(DIM), DIM, DIM),
-        GemminiISA.preload(sp_addr(DIM), acc_addr(0), DIM, DIM, DIM, DIM),
-        GemminiISA.compute_preloaded(sp_addr(0), GARBAGE_ADDR, a_cols=DIM, a_rows=DIM, bd_cols=DIM, bd_rows=DIM),
-        GemminiISA.config_st(stride=DIM * 4, acc_scale=0x3F800000),
-        GemminiISA.mvout(ADDR_OUT, acc_addr(0, read_full=True), DIM, DIM),
+        GemminiISA.config_ld(stride=dim, scale=0x3F800000),
+        GemminiISA.mvin(ADDR_A, sp_addr(0), dim, dim),
+        GemminiISA.mvin(ADDR_B, sp_addr(dim), dim, dim),
+        GemminiISA.preload(sp_addr(dim), acc_addr(0), dim, dim, dim, dim),
+        GemminiISA.compute_preloaded(sp_addr(0), GARBAGE_ADDR, a_cols=dim, a_rows=dim, bd_cols=dim, bd_rows=dim),
+        GemminiISA.config_st(stride=dim * 4, acc_scale=0x3F800000),
+        GemminiISA.mvout(ADDR_OUT, acc_addr(0, read_full=True), dim, dim),
     ]
     for f, rs1, rs2 in instrs: await send_cmd(dut, f, rs1, rs2)
     await wait_idle(axi)
-    return np.frombuffer(bytes(axi.memory[ADDR_OUT:ADDR_OUT + DIM * DIM * 4]),
-                         dtype=np.int32).reshape(DIM, DIM)
+    return np.frombuffer(bytes(axi.memory[ADDR_OUT:ADDR_OUT + dim * dim * 4]),
+                         dtype=np.int32).reshape(dim, dim)
 
 @cocotb.test()
 async def test_matmul_identity(dut):
-    axi = await setup(dut)
-    A, B = np.eye(DIM, dtype=np.int8), np.arange(DIM * DIM, dtype=np.int8).reshape(DIM, DIM)
-    result = await run_matmul(dut, axi, A, B)
+    config, axi = await setup(dut)
+    dim = config.mesh_rows * config.tile_rows
+    A, B = np.eye(dim, dtype=np.int8), np.arange(dim * dim, dtype=np.int8).reshape(dim, dim)
+    result = await run_matmul(dut, axi, dim, A, B)
     expected = A.astype(np.int32) @ B.astype(np.int32)
     dut._log.info(f"Expected[0]: {expected[0]}\nGot[0]:      {result[0]}")
     np.testing.assert_array_equal(result, expected)
@@ -99,11 +98,12 @@ async def test_matmul_identity(dut):
 
 @cocotb.test()
 async def test_matmul_random(dut):
-    axi = await setup(dut, rand=True)
+    config, axi = await setup(dut, rand=True)
+    dim = config.mesh_rows * config.tile_rows
     rng = np.random.default_rng(42)
-    A = rng.integers(-10, 10, size=(DIM, DIM), dtype=np.int8)
-    B = rng.integers(-10, 10, size=(DIM, DIM), dtype=np.int8)
-    result = await run_matmul(dut, axi, A, B)
+    A = rng.integers(-10, 10, size=(dim, dim), dtype=np.int8)
+    B = rng.integers(-10, 10, size=(dim, dim), dtype=np.int8)
+    result = await run_matmul(dut, axi, dim, A, B)
     expected = A.astype(np.int32) @ B.astype(np.int32)
     dut._log.info(f"Expected[0]: {expected[0]}\nGot[0]:      {result[0]}")
     np.testing.assert_array_equal(result, expected)
@@ -111,8 +111,9 @@ async def test_matmul_random(dut):
 
 @cocotb.test()
 async def test_matmul_tiled(dut):
-    axi = await setup(dut)
-    N = 2 * DIM
+    config, axi = await setup(dut)
+    dim = config.mesh_rows * config.tile_rows
+    N = 2 * dim
     rng = np.random.default_rng(99)
     A = rng.integers(-5, 5, size=(N, N), dtype=np.int8)
     B = rng.integers(-5, 5, size=(N, N), dtype=np.int8)
@@ -120,21 +121,21 @@ async def test_matmul_tiled(dut):
     _load(axi.memory, ADDR_B, B)
 
     instrs = [GemminiISA.config_ex(dataflow=1, acc_scale=0x3F800000)]
-    n_tiles = N // DIM
+    n_tiles = N // dim
     for ti in range(n_tiles):
         for tj in range(n_tiles):
             for tk in range(n_tiles):
                 instrs += [GemminiISA.config_ld(stride=N, scale=0x3F800000),
-                           GemminiISA.mvin(ADDR_A + ti * DIM * N + tk * DIM, sp_addr(0), DIM, DIM),
+                           GemminiISA.mvin(ADDR_A + ti * dim * N + tk * dim, sp_addr(0), dim, dim),
                            GemminiISA.config_ld(stride=N, scale=0x3F800000),
-                           GemminiISA.mvin(ADDR_B + tk * DIM * N + tj * DIM, sp_addr(DIM), DIM, DIM)]
+                           GemminiISA.mvin(ADDR_B + tk * dim * N + tj * dim, sp_addr(dim), dim, dim)]
                 a_acc = acc_addr(0) if tk == 0 else acc_addr(0, accumulate=True)
-                instrs += [GemminiISA.preload(sp_addr(DIM), a_acc, DIM, DIM, DIM, DIM),
+                instrs += [GemminiISA.preload(sp_addr(dim), a_acc, dim, dim, dim, dim),
                            GemminiISA.compute_preloaded(sp_addr(0), GARBAGE_ADDR,
-                               a_cols=DIM, a_rows=DIM, bd_cols=DIM, bd_rows=DIM)]
+                               a_cols=dim, a_rows=dim, bd_cols=dim, bd_rows=dim)]
             instrs += [GemminiISA.config_st(stride=N * 4, acc_scale=0x3F800000),
-                       GemminiISA.mvout(ADDR_OUT + ti * DIM * N * 4 + tj * DIM * 4,
-                                        acc_addr(0, read_full=True), DIM, DIM)]
+                       GemminiISA.mvout(ADDR_OUT + ti * dim * N * 4 + tj * dim * 4,
+                                        acc_addr(0, read_full=True), dim, dim)]
 
     for f, rs1, rs2 in instrs: await send_cmd(dut, f, rs1, rs2)
     await wait_idle(axi)
@@ -143,7 +144,7 @@ async def test_matmul_tiled(dut):
     expected = A.astype(np.int32) @ B.astype(np.int32)
     dut._log.info(f"Expected[0]: {expected[0]}\nGot[0]:      {result[0]}")
     np.testing.assert_array_equal(result, expected)
-    dut._log.info("PASS: tiled 32x32 matmul")
+    dut._log.info(f"PASS: tiled {N}x{N} matmul")
 
 # counter helpers
 async def _ccmd(dut, funct, rs1, rs2, rq):
@@ -159,7 +160,8 @@ async def _csnap_reset(dut, rq): await _ccmd(dut, *GemminiISA.counter_snapshot_r
 
 @cocotb.test()
 async def test_perf_counters(dut):
-    axi, rq = await setup(dut, with_resp=True)
+    config, axi, rq = await setup(dut, with_resp=True)
+    dim = config.mesh_rows * config.tile_rows
     expected_nonzero = {1, 2, 3, 9, 12, 18, 21, 24, 35, 42}
     expected_nonzero_ext = {4, 5}
 
@@ -168,14 +170,11 @@ async def test_perf_counters(dut):
                    if round_idx * 8 + i < CounterEvent.N else 0, False) for i in range(8)]
         for idx, ev, ext in events: await _ccfg(dut, idx, ev, rq, ext=ext)
         await _creset(dut, rq)
-        await run_matmul(dut, axi)
+        await run_matmul(dut, axi, dim)
         for idx, ev, _ in events:
             if ev == 0: continue
             val = await _cread(dut, idx, rq)
-            if ev in CounterEvent.STALE:
-                assert val == 0, f"stale event {ev} should be 0, got {val}"
-                dut._log.info(f"  event {ev:2d} (stale): {val} == 0 OK")
-            elif ev in expected_nonzero:
+            if ev in expected_nonzero:
                 assert val > 0, f"event {ev} expected > 0, got {val}"
                 dut._log.info(f"  event {ev:2d}: {val} > 0 OK")
             else: dut._log.info(f"  event {ev:2d}: {val}")
@@ -183,7 +182,7 @@ async def test_perf_counters(dut):
     ext_events = list(range(1, CounterExternal.N))
     for i, ev in enumerate(ext_events[:8]): await _ccfg(dut, i, ev, rq, ext=True)
     await _creset(dut, rq)
-    await run_matmul(dut, axi)
+    await run_matmul(dut, axi, dim)
     for i, ev in enumerate(ext_events[:8]):
         val = await _cread(dut, i, rq)
         if ev in expected_nonzero_ext:
@@ -193,24 +192,12 @@ async def test_perf_counters(dut):
     dut._log.info("PASS: perf counters verified")
 
 @cocotb.test()
-async def test_stale_counters_zero(dut):
-    axi, rq = await setup(dut, with_resp=True)
-    stale = sorted(CounterEvent.STALE)
-    for i, ev in enumerate(stale): await _ccfg(dut, i, ev, rq)
-    await _creset(dut, rq)
-    await run_matmul(dut, axi)
-    for i, ev in enumerate(stale):
-        val = await _cread(dut, i, rq)
-        assert val == 0, f"stale event {ev} should be 0, got {val}"
-        dut._log.info(f"  stale event {ev}: {val} == 0 OK")
-    dut._log.info("PASS: all stale counters read 0")
-
-@cocotb.test()
 async def test_counter_snapshot(dut):
-    axi, rq = await setup(dut, with_resp=True)
+    config, axi, rq = await setup(dut, with_resp=True)
+    dim = config.mesh_rows * config.tile_rows
     await _ccfg(dut, 0, CounterEvent.RESERVATION_STATION_ACTIVE_CYCLES, rq)
     await _creset(dut, rq)
-    await run_matmul(dut, axi)
+    await run_matmul(dut, axi, dim)
     await _csnap(dut, rq)
     val1 = await _cread(dut, 0, rq)
     assert val1 > 0, f"RS_ACTIVE should be > 0, got {val1}"
@@ -225,7 +212,14 @@ async def test_counter_snapshot(dut):
     dut._log.info("PASS: counter snapshot works")
 
 
-def test_gemmini():
-    config = GemminiConfig(verilog_dir=BUILD_DIR)
+CONFIGS = [
+    pytest.param(dict(mesh_rows=8, mesh_columns=8), id="8x8"),
+    pytest.param(dict(mesh_rows=16, mesh_columns=16), id="16x16"),
+    pytest.param(dict(mesh_rows=8, mesh_columns=8, dma_buswidth=64), id="8x8-bus64"),
+]
+
+@pytest.mark.parametrize("cfg_kwargs", CONFIGS)
+def test_gemmini(cfg_kwargs):
+    config = GemminiConfig(**cfg_kwargs)
     dut = Gemmini(config)
     cocotb_run(dut, config, always=ALWAYS)

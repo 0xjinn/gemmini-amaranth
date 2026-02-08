@@ -9,6 +9,7 @@ import GemminiISA._
 import Util._
 
 class Gemmini[T <: Data: Arithmetic, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V]) extends Module {
+  override def desiredName = "GemminiChisel"
 
   import config._
 
@@ -40,7 +41,7 @@ class Gemmini[T <: Data: Arithmetic, U <: Data, V <: Data](config: GemminiArrayC
   val counters = Module(new CounterController(config.num_counter, config.xLen))
   io.resp <> counters.io.out  // Counter access command will be committed immediately
   counters.io.event_io.external_values(0) := 0.U
-  counters.io.event_io.event_signal(0) := false.B
+  for (i <- 0 until CounterEvent.n) { counters.io.event_io.event_signal(i) := false.B }
   counters.io.in.valid := false.B
   counters.io.in.bits := DontCare
   counters.io.event_io.collect(spad.io.counter)

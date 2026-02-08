@@ -25,17 +25,12 @@ object CounterEvent {
   val STORE_POOLING_CYCLE = 13
   val STORE_SCRATCHPAD_WAIT_CYCLE = 14
 
-  // FIXME: these are not needed, keep them for sanity checking
-  val DMA_TLB_MISS_CYCLE = 15
-  val DMA_TLB_HIT_REQ = 16
-  val DMA_TLB_TOTAL_REQ = 17
+  // 15-17, 19, 22: formerly TLB events (removed, slots unused)
 
   val RDMA_ACTIVE_CYCLE = 18
-  val RDMA_TLB_WAIT_CYCLES = 19
   val RDMA_TL_WAIT_CYCLES = 20
 
   val WDMA_ACTIVE_CYCLE = 21
-  val WDMA_TLB_WAIT_CYCLES = 22
   val WDMA_TL_WAIT_CYCLES = 23
 
   val EXE_ACTIVE_CYCLE = 24
