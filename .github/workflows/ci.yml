@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    name: Cocotb tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: sbt
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Verilator
+        run: sudo apt-get update && sudo apt-get install -y verilator
+
+      - name: Install package
+        run: pip install -e ".[sim]"
+
+      - name: Cache generated Verilog
+        uses: actions/cache@v4
+        with:
+          path: build/
+          key: verilog-${{ hashFiles('chisel/src/**/*.scala', 'gemmini_amaranth/generate.py') }}
+
+      - run: pytest test/test_gemmini.py -v
