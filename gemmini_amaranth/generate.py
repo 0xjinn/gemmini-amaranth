@@ -1,0 +1,450 @@
+"""Gemmini Verilog generation via sbt + GemminiGenerator.
+
+This module contains all the logic for configuring and invoking the Chisel
+build to produce Gemmini Verilog.  It is used both by the CLI entry-point
+(``gemmini-generate``) and programmatically via :meth:`GemminiConfig.generate`.
+"""
+
+import argparse
+import hashlib
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+# ---------------------------------------------------------------------------
+# Data type mapping: dtype -> Chisel gemmini-key args
+# ---------------------------------------------------------------------------
+DTYPE_MAP = {
+    "int8": {
+        "inputTypeFamily": "sint",
+        "inputWidth": "8",
+        "accWidth": "32",
+        "spatialOutputWidth": "20",
+    },
+    "int16": {
+        "inputTypeFamily": "sint",
+        "inputWidth": "16",
+        "accWidth": "32",
+        "spatialOutputWidth": "32",
+    },
+    "int32": {
+        "inputTypeFamily": "sint",
+        "inputWidth": "32",
+        "accWidth": "32",
+        "spatialOutputWidth": "32",
+    },
+    "fp32": {
+        "inputTypeFamily": "float",
+        "inputExpWidth": "8",
+        "inputSigWidth": "24",
+        "accExpWidth": "8",
+        "accSigWidth": "24",
+    },
+    "fp16": {
+        "inputTypeFamily": "float",
+        "inputExpWidth": "5",
+        "inputSigWidth": "11",
+        "accExpWidth": "8",
+        "accSigWidth": "24",
+    },
+    "bf16": {
+        "inputTypeFamily": "float",
+        "inputExpWidth": "8",
+        "inputSigWidth": "8",
+        "accExpWidth": "8",
+        "accSigWidth": "24",
+    },
+    "dummy": {
+        "inputTypeFamily": "dummy",
+        "inputWidth": "8",
+        "accWidth": "32",
+        "spatialOutputWidth": "20",
+    },
+}
+
+PRESETS = ["default", "chip", "largeChip", "lean", "fp32", "fp16", "bf16"]
+
+# ---------------------------------------------------------------------------
+# Chisel dependencies — cloned automatically if missing
+# ---------------------------------------------------------------------------
+DEPS = {
+    "berkeley-hardfloat": {
+        "url": "https://github.com/ucb-bar/berkeley-hardfloat.git",
+        "commit": "26f00d00c3f3f57480065e02bfcfde3d3b41ec51",
+    },
+    "cde": {
+        "url": "https://github.com/chipsalliance/cde.git",
+        "commit": "2bcaeae2b9914bd25497ce3c6fa62dc5ca80e09f",
+    },
+}
+
+
+def find_chisel_dir():
+    """Locate the Chisel source directory.
+
+    Checks ``GEMMINI_CHISEL_DIR`` env var first, then falls back to
+    ``<package-root>/../chisel``.
+    """
+    env = os.environ.get("GEMMINI_CHISEL_DIR")
+    if env:
+        p = Path(env)
+        if not p.is_dir():
+            raise FileNotFoundError(f"GEMMINI_CHISEL_DIR={env} is not a directory")
+        return p
+    default = Path(__file__).resolve().parent.parent / "chisel"
+    if not default.is_dir():
+        raise FileNotFoundError(
+            f"Chisel directory not found at {default}. "
+            "Set GEMMINI_CHISEL_DIR or clone the chisel sources."
+        )
+    return default
+
+
+def ensure_deps(chisel_dir):
+    """Clone Chisel dependencies if missing."""
+    for name, info in DEPS.items():
+        dep_dir = chisel_dir / name
+        if dep_dir.exists() and any(dep_dir.iterdir()):
+            continue
+        print(f"Cloning {name}...")
+        subprocess.run(
+            ["git", "clone", info["url"], str(dep_dir)],
+            check=True,
+        )
+        subprocess.run(
+            ["git", "checkout", info["commit"]],
+            cwd=str(dep_dir),
+            check=True,
+            capture_output=True,
+        )
+        print(f"  {name} @ {info['commit'][:12]}")
+
+
+def validate_params(gemmini_args):
+    """Validate config constraints before invoking sbt.
+
+    Raises :class:`ValueError` on invalid configuration.
+    """
+    errors = []
+
+    mesh_rows = int(gemmini_args.get("meshRows", "16"))
+    mesh_cols = int(gemmini_args.get("meshColumns", "16"))
+    tile_rows = int(gemmini_args.get("tileRows", "1"))
+    tile_cols = int(gemmini_args.get("tileColumns", "1"))
+
+    block_rows = mesh_rows * tile_rows
+    block_cols = mesh_cols * tile_cols
+
+    if block_rows != block_cols:
+        errors.append(
+            f"Array must be square: mesh_rows*tile_rows ({block_rows}) != "
+            f"mesh_columns*tile_columns ({block_cols})"
+        )
+
+    dim = block_rows
+    if dim < 2:
+        errors.append(f"Array dimension must be >= 2, got {dim}")
+    if dim & (dim - 1) != 0:
+        errors.append(f"Array dimension must be power of 2, got {dim}")
+
+    family = gemmini_args.get("inputTypeFamily", "sint")
+    if family == "float":
+        input_width = int(gemmini_args.get("inputExpWidth", "8")) + int(gemmini_args.get("inputSigWidth", "24"))
+    else:
+        input_width = int(gemmini_args.get("inputWidth", "8"))
+
+    sp_banks = int(gemmini_args.get("spBanks", "4"))
+    acc_banks = int(gemmini_args.get("accBanks", "2"))
+    sp_kb = int(gemmini_args.get("spCapacityKB", "256"))
+    acc_kb = int(gemmini_args.get("accCapacityKB", "64"))
+
+    sp_width = block_cols * input_width
+    if sp_width > 0:
+        sp_bank_entries = sp_kb * 1024 * 8 // (sp_banks * sp_width)
+        if sp_bank_entries == 0:
+            errors.append(f"Scratchpad too small: {sp_kb}KB / {sp_banks} banks / {sp_width}-bit rows = 0 entries")
+        elif sp_bank_entries & (sp_bank_entries - 1) != 0:
+            errors.append(f"SP bank entries must be power of 2, got {sp_bank_entries}")
+        elif sp_bank_entries % dim != 0:
+            errors.append(f"SP bank entries ({sp_bank_entries}) must be divisible by array dim ({dim})")
+
+    if family == "float":
+        acc_width = int(gemmini_args.get("accExpWidth", "8")) + int(gemmini_args.get("accSigWidth", "24"))
+    else:
+        acc_width = int(gemmini_args.get("accWidth", "32"))
+
+    acc_row_width = block_cols * acc_width
+    if acc_row_width > 0:
+        acc_bank_entries = acc_kb * 1024 * 8 // (acc_banks * acc_row_width)
+        if acc_bank_entries == 0:
+            errors.append(f"Accumulator too small: {acc_kb}KB / {acc_banks} banks / {acc_row_width}-bit rows = 0 entries")
+        elif acc_bank_entries % dim != 0:
+            errors.append(f"ACC bank entries ({acc_bank_entries}) must be divisible by array dim ({dim})")
+
+    if errors:
+        raise ValueError("Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
+
+
+def config_hash(gen_params):
+    """Return a 12-char hex hash of the generation parameters."""
+    canonical = json.dumps(gen_params, sort_keys=True)
+    return hashlib.sha256(canonical.encode()).hexdigest()[:12]
+
+
+# Maps user-facing kwargs to Chisel --gemmini-key=value args.
+_PARAM_MAP = {
+    "mesh_rows": "meshRows",
+    "mesh_columns": "meshColumns",
+    "tile_rows": "tileRows",
+    "tile_columns": "tileColumns",
+    "dataflow": "dataflow",
+    "sp_capacity_kb": "spCapacityKB",
+    "acc_capacity_kb": "accCapacityKB",
+    "sp_banks": "spBanks",
+    "acc_banks": "accBanks",
+    "dma_maxbytes": "dmaMaxbytes",
+    "dma_buswidth": "dmaBuswidth",
+    "max_in_flight_mem_reqs": "maxInFlightMemReqs",
+}
+
+
+def build_gen_params(*, dtype="int8", preset=None,
+                     no_training_convs=False, no_max_pool=False,
+                     no_nonlinear_activations=False, **kwargs):
+    """Build the ``--gemmini-key=value`` args dict from user-facing kwargs."""
+    gemmini_args = {}
+
+    if preset:
+        gemmini_args["preset"] = preset
+    if dtype and not preset:
+        if dtype not in DTYPE_MAP:
+            raise ValueError(f"Unknown dtype {dtype!r}. Choose from: {list(DTYPE_MAP)}")
+        gemmini_args.update(DTYPE_MAP[dtype])
+    elif dtype and preset:
+        if dtype not in DTYPE_MAP:
+            raise ValueError(f"Unknown dtype {dtype!r}. Choose from: {list(DTYPE_MAP)}")
+        gemmini_args.update(DTYPE_MAP[dtype])
+
+    for py_name, scala_name in _PARAM_MAP.items():
+        val = kwargs.pop(py_name, None)
+        if val is not None:
+            gemmini_args[scala_name] = str(val)
+
+    if no_training_convs:
+        gemmini_args["hasTrainingConvs"] = "false"
+    if no_max_pool:
+        gemmini_args["hasMaxPool"] = "false"
+    if no_nonlinear_activations:
+        gemmini_args["hasNonlinearActivations"] = "false"
+
+    if kwargs:
+        raise TypeError(f"Unknown parameters: {', '.join(kwargs)}")
+
+    return gemmini_args
+
+
+def build_sbt_command(gemmini_args, output_dir):
+    """Build the full sbt runMain command string."""
+    parts = ["GemminiGenerator"]
+    for key, val in sorted(gemmini_args.items()):
+        parts.append(f"--gemmini-{key}={val}")
+
+    abs_output = str(Path(output_dir).resolve())
+    parts.append("--target-dir")
+    parts.append(abs_output)
+
+    inner = " ".join(parts)
+    return f"""sbt 'runMain {inner}'"""
+
+
+def run_sbt(sbt_cmd, chisel_dir, verbose=False):
+    """Execute the sbt command in the chisel directory.
+
+    Raises :class:`subprocess.CalledProcessError` on failure.
+    """
+    result = subprocess.run(
+        sbt_cmd,
+        shell=True,
+        cwd=str(chisel_dir),
+        capture_output=not verbose,
+        text=True,
+    )
+
+    if result.returncode != 0:
+        msg = "sbt command failed!"
+        if not verbose and result.stderr:
+            msg += "\n" + result.stderr
+        if not verbose and result.stdout:
+            lines = result.stdout.strip().split("\n")
+            msg += "\n" + "\n".join(lines[-30:])
+        raise subprocess.CalledProcessError(result.returncode, sbt_cmd, msg)
+
+
+def augment_config_json(gemmini_args, output_dir, dtype=None):
+    """Augment the Scala-generated gemmini_config.json with Python-side metadata."""
+    config_path = Path(output_dir) / "gemmini_config.json"
+    if config_path.exists():
+        with open(config_path) as f:
+            config = json.load(f)
+    else:
+        config = {}
+
+    config["generator"] = "GemminiGenerator"
+    if dtype:
+        config["dtype"] = dtype
+    config["cliParameters"] = gemmini_args
+    config["outputDir"] = str(output_dir)
+
+    with open(config_path, "w") as f:
+        json.dump(config, f, indent=2)
+    print(f"Config JSON: {config_path}")
+
+
+def generate_verilog(gen_params, output_dir, chisel_dir=None, verbose=False):
+    """Orchestrate Verilog generation: find chisel dir, ensure deps, validate, run sbt, augment JSON."""
+    if chisel_dir is None:
+        chisel_dir = find_chisel_dir()
+    else:
+        chisel_dir = Path(chisel_dir)
+
+    ensure_deps(chisel_dir)
+    validate_params(gen_params)
+
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    sbt_cmd = build_sbt_command(gen_params, output_dir)
+
+    if verbose:
+        print(f"  Command: {sbt_cmd}")
+        print(f"  Output dir: {output_dir}")
+        print(f"  Parameters: {json.dumps(gen_params, indent=2)}")
+
+    print("Generating Gemmini Verilog...")
+    run_sbt(sbt_cmd, chisel_dir, verbose)
+
+    # Verify output files
+    verilog_file = output_dir / "Gemmini.v"
+    header_file = output_dir / "gemmini_params.h"
+    config_file = output_dir / "gemmini_config.json"
+
+    missing = []
+    if not verilog_file.exists():
+        v_files = list(output_dir.glob("*.v")) + list(output_dir.glob("*.sv"))
+        if not v_files:
+            missing.append(str(verilog_file))
+        else:
+            verilog_file = v_files[0]
+            print(f"Verilog output: {verilog_file}")
+
+    if not header_file.exists():
+        h_files = list(output_dir.glob("gemmini_params*.h"))
+        if not h_files:
+            missing.append(str(header_file))
+        else:
+            header_file = h_files[0]
+
+    if not config_file.exists():
+        missing.append(str(config_file))
+
+    if missing:
+        print(f"WARNING: Expected output files not found: {missing}", file=sys.stderr)
+    else:
+        print(f"Generated Verilog: {verilog_file} ({verilog_file.stat().st_size:,} bytes)")
+        print(f"Generated header:  {header_file} ({header_file.stat().st_size:,} bytes)")
+        print(f"Generated config:  {config_file} ({config_file.stat().st_size:,} bytes)")
+
+    # Infer dtype from gen_params for the JSON augmentation
+    dtype = None
+    for dtype_name, dtype_args in DTYPE_MAP.items():
+        if all(gen_params.get(k) == v for k, v in dtype_args.items()):
+            dtype = dtype_name
+            break
+
+    augment_config_json(gen_params, output_dir, dtype=dtype)
+    print("Done.")
+
+
+# ---------------------------------------------------------------------------
+# CLI entry point
+# ---------------------------------------------------------------------------
+
+def _parse_args(argv=None):
+    p = argparse.ArgumentParser(
+        description="Generate configurable Gemmini Verilog",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""\
+Example usage:
+    gemmini-generate                                          # defaults: int8, 16x16, BOTH
+    gemmini-generate --preset chip                            # named preset
+    gemmini-generate --dtype fp32 --mesh-rows 4 --mesh-columns 4
+    gemmini-generate --dtype bf16 --dataflow WS --output-dir build/bf16_ws
+    gemmini-generate --dry-run                                # show sbt command only
+""",
+    )
+    p.add_argument("--preset", choices=PRESETS, help="Named preset config")
+    p.add_argument("--dtype", choices=list(DTYPE_MAP.keys()), default=None, help="Data type (default: int8)")
+    p.add_argument("--mesh-rows", type=int, default=None)
+    p.add_argument("--mesh-columns", type=int, default=None)
+    p.add_argument("--tile-rows", type=int, default=None)
+    p.add_argument("--tile-columns", type=int, default=None)
+    p.add_argument("--dataflow", choices=["OS", "WS", "BOTH"], default=None)
+    p.add_argument("--sp-capacity-kb", type=int, default=None)
+    p.add_argument("--acc-capacity-kb", type=int, default=None)
+    p.add_argument("--sp-banks", type=int, default=None)
+    p.add_argument("--acc-banks", type=int, default=None)
+    p.add_argument("--dma-maxbytes", type=int, default=None)
+    p.add_argument("--dma-buswidth", type=int, default=None)
+    p.add_argument("--max-in-flight-mem-reqs", type=int, default=None)
+    p.add_argument("--no-training-convs", action="store_true")
+    p.add_argument("--no-max-pool", action="store_true")
+    p.add_argument("--no-nonlinear-activations", action="store_true")
+    p.add_argument("--output-dir", type=str, default="build", help="Output directory (default: build/)")
+    p.add_argument("--chisel-dir", type=str, default=None, help="Chisel source directory")
+    p.add_argument("--dry-run", action="store_true")
+    p.add_argument("--verbose", action="store_true")
+    return p.parse_args(argv)
+
+
+def cli_main(argv=None):
+    """CLI entry point for Gemmini Verilog generation."""
+    args = _parse_args(argv)
+
+    chisel_dir = Path(args.chisel_dir) if args.chisel_dir else find_chisel_dir()
+
+    # Build gen_params from CLI args
+    cli_kwargs = {}
+    if args.preset:
+        cli_kwargs["preset"] = args.preset
+    if args.dtype:
+        cli_kwargs["dtype"] = args.dtype
+
+    for py_name in _PARAM_MAP:
+        cli_name = py_name  # argparse stores with underscores
+        val = getattr(args, cli_name, None)
+        if val is not None:
+            cli_kwargs[py_name] = val
+
+    if args.no_training_convs:
+        cli_kwargs["no_training_convs"] = True
+    if args.no_max_pool:
+        cli_kwargs["no_max_pool"] = True
+    if args.no_nonlinear_activations:
+        cli_kwargs["no_nonlinear_activations"] = True
+
+    gen_params = build_gen_params(**cli_kwargs)
+    validate_params(gen_params)
+
+    # Resolve output_dir relative to cwd (not package root)
+    output_dir = Path(args.output_dir).resolve()
+    sbt_cmd = build_sbt_command(gen_params, output_dir)
+
+    if args.dry_run:
+        print("Dry run - would execute:")
+        print(f"  cd {chisel_dir}")
+        print(f"  {sbt_cmd}")
+        return
+
+    generate_verilog(gen_params, output_dir, chisel_dir, args.verbose)

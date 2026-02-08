@@ -1,0 +1,30 @@
+[project]
+name = "gemmini-amaranth"
+description = "Standalone Gemmini systolic array with Amaranth AXI wrapper"
+version = "0.1.0"
+requires-python = ">=3.11"
+license = "BSD-3-Clause"
+dependencies = [
+    "numpy",
+    "amaranth[builtin-yosys]",
+    "amaranth-soc @ git+https://github.com/amaranth-lang/amaranth-soc.git",
+]
+
+[project.urls]
+Repository = "https://github.com/0xjinn/gemmini-amaranth"
+
+[project.optional-dependencies]
+sim = ["cocotb", "pytest"]
+
+[project.scripts]
+gemmini-generate = "gemmini_amaranth.generate:cli_main"
+
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["gemmini_amaranth*"]
+
+[tool.ruff]
+line-length = 120
