@@ -86,13 +86,7 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
   val copy_addr = RegInit(io.req.bits.addr) //spad bank address store for sync
 
 
-  //how much horizonal turn we have to compute (input_channel*kernel_dim/16)
-  //val turn = Mux(im2col_width(3,0) === 0.U, (im2col_width >> (log2Up(block_size)).U).asUInt, (im2col_width >> (log2Up(block_size)).U).asUInt + 1.U)
-  val turn = filter_dim2//Mux(channel(3,0) === 0.U, filter_dim2*channel(6, 4), filter_dim2*channel(6, 4) + 1.U)
-
-  //Seah: added for more than 16 rows of output
-  //how much vertical turn we have to compute (output_dim/16)
-  //val row_turn = Mux(output_dim(3,0) === 0.U, (output_dim >> (log2Up(block_size)).U).asUInt - 1.U, (output_dim >> (log2Up(block_size)).U).asUInt) //im2col height
+  val turn = filter_dim2
   val row_turn = io.req.bits.row_turn
   val row_left = io.req.bits.row_left
 
@@ -102,12 +96,10 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
   val im2col_state = RegInit(nothing_to_do)
 
   val im2col_turn = RegInit(turn)
-  //val turn_done = turn - im2col_turn
   val modulo_im2col_turn = RegInit(turn)
   val im2col_fin_reset = RegInit(false.B)
 
   val im2col_row_turn_counter = RegInit(0.U((row_turn.getWidth).W))
-  //val im2col_row_counter_update = RegInit(false.B)
   val im2col_row_turn_counter_d = RegInit(im2col_row_turn_counter)
   when(im2col_state === waiting_for_im2col){
     im2col_row_turn_counter_d := im2col_row_turn_counter
@@ -145,8 +137,6 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
   val im2col_spad_bank = (copy_addr + window_address).sp_bank()
   val im2col_spad_row = (copy_addr + window_address).sp_row()
   dontTouch(im2col_spad_bank)
-  //io.sram_reads(copy_addr.sp_bank()).req.valid := sram_read_req && !im2col_fin_reg
-  //io.sram_reads(copy_addr.sp_bank()).req.bits.addr := copy_addr.sp_row() + window_address
   io.sram_reads(im2col_spad_bank).req.bits.addr := im2col_spad_row
   io.sram_reads(im2col_spad_bank).req.valid := sram_read_req && !im2col_fin_reg
 
@@ -240,8 +230,7 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
       }
     }
     is(doing_im2col){
-      //when(im2col_fin_reg|| !sram_resp_valid){ //when finished
-      when(im2col_fin_reg){ //Todo: control signal check
+      when(im2col_fin_reg){
         sram_read_req := false.B
       }
 
@@ -276,8 +265,7 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
       row_turn_counter_noreset := true.B
       window_row_counter := 0.U
       window_row_counter_saver := 0.U
-      //when(im2col_row_turn_counter_d =/= 0.U){
-      when(im2col_row_turn_counter_d =/= 0.U && !im2col_fin) { //added !im2col_fin to sync transition
+        when(im2col_row_turn_counter_d =/= 0.U && !im2col_fin) {
         im2col_state := waiting_for_im2col //continue doing im2col
       }.elsewhen(im2col_row_turn_counter_d === 0.U){
         im2col_state := nothing_to_do
@@ -308,13 +296,10 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
     im2col_fin_reg := false.B
   }
 
-  //val row_counter_deq_d = RegNext(sram_read_signals_q.io.deq.bits.row_counter) //Seah: changed - 1 clock delayed version
   val column_counter_deq_d = RegNext(sram_read_signals_q.io.deq.bits.column_counter)
 
   val column_counter_last_row_block = im2col_row_turn_counter === 0.U && (column_counter === row_left - 1.U)
-  //(column_counter + block_done * block_size.U === ocol * orow - 1.U)
   val column_counter_last_row_block_deq = (sram_read_signals_q.io.deq.bits.block_done === row_turn) && (column_counter_deq_d >= row_left)
-  //column_counter_deq_d >= (ocol*orow - sram_read_signals_q.io.deq.bits.block_done * block_size.U)
 
   val req_valid = RegInit(false.B)
 
@@ -333,7 +318,6 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
     }
   }
 
-  //when((!io.req.valid && !start_inputting_A && !sram_resp_valid) || im2col_fin_reset){
   when((!req_valid && !start_inputting_A && !sram_resp_valid) || im2col_fin_reset){
     column_counter := 0.U
     im2col_fin := false.B
@@ -376,10 +360,8 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
 
 
   val sram_req_deq_valid_d = RegNext(sram_read_signals_q.io.deq.valid)
-  //val sram_resp_valid_deq_d = RegNext(sram_read_signals_q.io.deq.bits.sram_resp_valid)
 
-  //making output data valid signal
-  when(sram_req_deq_valid_d ){//&& sram_resp_valid_deq_d){
+  when(sram_req_deq_valid_d ){
     when(im2col_fin_pulse){
       valid_reg := false.B
     }.elsewhen(column_counter_last_row_block_deq && valid_reg){ //if finished earlier
@@ -393,7 +375,7 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
   }
 
   //added for mul_pre sync
-  val sram_deq_valid = sram_read_signals_q.io.deq.valid// && sram_read_signals_q.io.deq.bits.sram_resp_valid
+  val sram_deq_valid = sram_read_signals_q.io.deq.valid
   val im2col_delay = WireInit(false.B)
   when(io.req.valid && !sram_deq_valid && !((im2col_state === doing_im2col) && sram_read_req)){
     im2col_delay := true.B
@@ -404,7 +386,7 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
   val sram_bank_deq = RegNext(sram_read_signals_q.io.deq.bits.sram_bank)
   val sram_req_output = io.sram_reads(sram_bank_deq).resp.bits.data.asTypeOf(Vec(block_size, inputType))
 
-  when(!sram_read_im2col_fin_d && sram_req_deq_valid_d ){//&& sram_resp_valid_deq_d){
+  when(!sram_read_im2col_fin_d && sram_req_deq_valid_d ){
     when(channel === block_size.U){
       im2col_data := sram_req_output
     }.otherwise{
@@ -438,7 +420,7 @@ class Im2Col[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V
   sram_read_signals_q.io.enq.bits.start_inputting := start_inputting_A
   sram_read_signals_q.io.enq.bits.sram_bank := im2col_spad_bank
 
-  sram_read_signals_q.io.deq.ready := true.B//sram_resp_valid
+  sram_read_signals_q.io.deq.ready := true.B
   if(!config.hasIm2Col){ //to default values
     io.resp.valid := false.B
     io.req.ready := true.B

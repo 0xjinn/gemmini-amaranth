@@ -231,7 +231,6 @@ class AccumulatorScale[T <: Data, U <: Data](
       }
     }
 
-    //    val inputs = Seq.fill(width*nEntries) { Wire(Decoupled(new AccScaleDataWithIndex(t, scale_t)(ev))) }
     val current_policy = Wire(UInt(nEntries.W))
     val norm_mask_int = Wire(UInt(nEntries.W))
     norm_mask_int := VecInit(norm_mask).asUInt

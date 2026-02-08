@@ -1,23 +1,5 @@
 import chisel3._
 
-
-// class PTBR(pgLevels: Int, minPgLevels: Int, xLen: Int, maxPAddrBits: Int, pgIdxBits: Int, usingVM: Bool) extends Bundle {
-//   def additionalPgLevels = mode.extract(log2Ceil(pgLevels-minPgLevels+1)-1, 0)
-//   def pgLevelsToMode(i: Int) = (xLen, i) match {
-//     case (32, 2) => 1
-//     case (64, x) if x >= 3 && x <= 6 => x + 5
-//   }
-//   val (modeBits, maxASIdBits) = xLen match {
-//     case 32 => (1, 9)
-//     case 64 => (4, 16)
-//   }
-//   require(!usingVM || modeBits + maxASIdBits + maxPAddrBits - pgIdxBits == xLen)
-
-//   val mode = UInt(modeBits.W)
-//   val asid = UInt(maxASIdBits.W)
-//   val ppn = UInt((maxPAddrBits - pgIdxBits).W)
-// }
-
 object PRV
 {
   val SZ = 2

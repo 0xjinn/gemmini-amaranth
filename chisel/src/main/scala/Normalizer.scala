@@ -73,13 +73,11 @@ class AccumulationLanes[T <: Data](num_stats: Int, acc_t: T, n_lanes: Int, laten
   val pipe = Module(new Pipeline[LaneOutput](new LaneOutput, latency)())
 
   pipe.io.in.valid := io.ins.valid
-  // io.ins.ready := pipe.io.in.ready
   pipe.io.in.bits.result := result
   pipe.io.in.bits.stats_id := io.ins.bits.stats_id
 
   io.out.valid := pipe.io.out.valid
   pipe.io.out.ready := true.B
-  // pipe.io.out.ready := io.out.ready
   io.out.bits := pipe.io.out.bits
 
   io.busy := pipe.io.busy
@@ -127,13 +125,11 @@ class MaxLanes[T <: Data](num_stats: Int, acc_t: T, n_lanes: Int, latency: Int)(
   val pipe = Module(new Pipeline[LaneOutput](new LaneOutput, latency)())
 
   pipe.io.in.valid := io.ins.valid
-  // io.ins.ready := pipe.io.in.ready
   pipe.io.in.bits.result := result
   pipe.io.in.bits.stats_id := io.ins.bits.stats_id
 
   io.out.valid := pipe.io.out.valid
   pipe.io.out.ready := true.B
-  // pipe.io.out.ready := io.out.ready
   io.out.bits := pipe.io.out.bits
 
   io.busy := pipe.io.busy
@@ -223,9 +219,6 @@ class MulPipe[T <: Data, U <: Data](scale_t: U)(implicit ev: Arithmetic[T])
       pipe.io.in.bits := mul_result
       io.ins.ready := pipe.io.in.ready
 
-//      pipe.io.out.ready := io.out.ready
-//      io.out.bits := pipe.io.out.bits
-//      io.out.valid := pipe.io.out.valid
       io.out <> pipe.io.out
   }
 }
@@ -434,8 +427,6 @@ class Normalizer[T <: Data, U <: Data](max_len: Int, num_reduce_lanes: Int, num_
   val sqrt_unit = Module(new IntSqrt(acc_t.getWidth))
   val sqrt_in = sqrt_unit.input
   val sqrt_out = sqrt_unit.output
-
-//  val (sqrt_in, sqrt_out) = variance_to_sqrt.sqrt.get
 
   {
     // Sqrt input

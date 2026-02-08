@@ -1,7 +1,6 @@
 import chisel3._
 import chisel3.util._
 import Util.UDValid
-// import midas.targetutils.SynthesizePrintf
 
 class XactTrackerEntry[U <: Data](maxShift: Int, spadWidth: Int, accWidth: Int,
                                   spadRows: Int, accRows: Int, maxReqBytes: Int, mvin_scale_t_bits: Int,

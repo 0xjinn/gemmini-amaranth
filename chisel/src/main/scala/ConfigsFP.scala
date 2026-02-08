@@ -1,10 +1,5 @@
 import chisel3._
 
-// import org.chipsalliance.cde.config.{Config, Parameters}
-// import freechips.rocketchip.diplomacy.{LazyModule, ValName}
-// import freechips.rocketchip.subsystem._
-// import freechips.rocketchip.tile.{BuildRoCC, OpcodeSet}
-
 // -----------------------------
 // Floating Point Config Mixins
 // -----------------------------
@@ -13,7 +8,6 @@ import chisel3._
 object GemminiFPConfigs {
   import Arithmetic.FloatArithmetic._
   lazy val defaultFPConfig = GemminiArrayConfig[Float, Float, Float](
-    // opcodes = OpcodeSet.custom3,
     tileRows = 1,
     tileColumns = 1,
     meshRows = 4,
@@ -132,75 +126,4 @@ object GemminiFPConfigs {
     clock_gate = true 
   )
 }
-
-////===========FP32 Default Config=========
-//class GemminiFP32DefaultConfig extends Config((site, here, up) => {
-//  case BuildRoCC => Seq(
-//      (p: Parameters) => {
-//        implicit val q = p
-//        implicit val v = implicitly[ValName]
-//        LazyModule(new Gemmini(GemminiFPConfigs.FP32DefaultConfig))
-//    }
-//  )
-//})
-
-// class ChipFP32GemminiConfig[T <: Data : Arithmetic, U <: Data, V <: Data](
-//   gemminiConfig: GemminiArrayConfig[T,U,V] = GemminiFPConfigs.chipFP32Config
-// ) extends Config((site, here, up) => {
-//   case BuildRoCC => up(BuildRoCC) ++ Seq(
-//     (p: Parameters) => {
-//       implicit val q = p
-//       val gemmini = LazyModule(new Gemmini(gemminiConfig))
-//       gemmini
-//     }
-//   )
-// })
-
-
-////===========FP16 Default Config=========
-//class GemminiFP16DefaultConfig extends Config((site, here, up) => {
-//  case BuildRoCC => Seq(
-//      (p: Parameters) => {
-//        implicit val q = p
-//        implicit val v = implicitly[ValName]
-//        LazyModule(new Gemmini(GemminiFPConfigs.FP16DefaultConfig))
-//    }
-//  )
-//})
-
-////===========BFLOAT16 Default Config=========
-//class GemminiBF16DefaultConfig extends Config((site, here, up) => {
-//  case BuildRoCC => Seq(
-//      (p: Parameters) => {
-//        implicit val q = p
-//        implicit val v = implicitly[ValName]
-//        LazyModule(new Gemmini(GemminiFPConfigs.BF16DefaultConfig))
-//    }
-//  )
-//})
-
-//class GemminiBF16DefaultHighPerfConfig extends Config((site, here, up) => {
-//  case BuildRoCC => Seq(
-//    (p: Parameters) => {
-//      implicit val q = p
-//      implicit val v = implicitly[ValName]
-//      val gemmini = LazyModule(new Gemmini(GemminiFPConfigs.BF16DefaultConfig.copy(
-//        ex_read_from_acc = false,
-//        ex_write_to_spad = false,
-//      )))
-//      gemmini
-//    }
-//  )
-//})
-
-////===========BFLOAT16 Default Config 8x8=========
-//class GemminiBF16Default8Config extends Config((site, here, up) => {
-//  case BuildRoCC => Seq(
-//      (p: Parameters) => {
-//        implicit val q = p
-//        implicit val v = implicitly[ValName]
-//        LazyModule(new Gemmini(GemminiFPConfigs.BF16Default8Config))
-//    }
-//  )
-//})
 

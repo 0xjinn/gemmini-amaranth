@@ -23,8 +23,6 @@ class StoreController[T <: Data : Arithmetic, U <: Data, V <: Data](config: Gemm
     val counter = new CounterEventIO()
   })
 
-  // val waiting_for_command :: waiting_for_dma_req_ready :: sending_rows :: Nil = Enum(3)
-
   object State extends ChiselEnum {
     val waiting_for_command, waiting_for_dma_req_ready, sending_rows, pooling = Value
   }
@@ -46,7 +44,6 @@ class StoreController[T <: Data : Arithmetic, U <: Data, V <: Data](config: Gemm
   val norm_stats_id = Reg(UInt(8.W)) // TODO magic number
   val acc_scale = Reg(acc_scale_t)
 
-  //val row_counter = RegInit(0.U(log2Ceil(block_rows).W))
   val row_counter = RegInit(0.U(12.W)) // TODO magic number
   val block_counter = RegInit(0.U(8.W)) // TODO magic number
 
@@ -194,8 +191,6 @@ class StoreController[T <: Data : Arithmetic, U <: Data, V <: Data](config: Gemm
   // Row counter
   when (io.dma.req.fire) {
     when (!pooling_is_enabled) {
-      //where does rows come from?
-      //row_counter := wrappingAdd(row_counter, 1.U, rows)
       when(mvout_1d_enabled){
         pocol_counter := wrappingAdd(pocol_counter, 1.U, pool_ocols)
         porow_counter := wrappingAdd(porow_counter, 1.U, pool_orows, pocol_counter === pool_ocols - 1.U)
@@ -273,7 +268,6 @@ class StoreController[T <: Data : Arithmetic, U <: Data, V <: Data](config: Gemm
     is (sending_rows) {
       val last_block = block_counter === blocks - 1.U && io.dma.req.fire
       val last_row = Mux(mvout_1d_enabled, row_counter === mvout_1d_rows - 1.U, row_counter === rows - 1.U) && io.dma.req.fire
-      //normal mvout: row, 1D mvout: orows*ocols
 
       val only_one_dma_req = block_counter === 0.U && row_counter === 0.U // This is a special case when only one DMA request is made
 
@@ -313,9 +307,4 @@ class StoreController[T <: Data : Arithmetic, U <: Data, V <: Data](config: Gemm
   io.counter.connectEventSignal(CounterEvent.STORE_POOLING_CYCLE, pooling_is_enabled)
   io.counter.connectEventSignal(CounterEvent.STORE_DMA_WAIT_CYCLE, control_state === waiting_for_dma_req_ready)
   io.counter.connectEventSignal(CounterEvent.STORE_SCRATCHPAD_WAIT_CYCLE, io.dma.req.valid && !io.dma.req.ready)
-
-  // if (use_firesim_simulation_counters) {
-  //   PerfCounter(pooling_is_enabled, "pooling_cycles", "cycles during which store controller is max-pooling")
-  //   PerfCounter(io.dma.req.valid && !io.dma.req.ready, "st_dma_wait_cycle", "cycles during which store controller is stalling for the DMA to be ready")
-  // }
 }

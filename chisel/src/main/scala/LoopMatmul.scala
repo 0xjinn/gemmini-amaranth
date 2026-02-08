@@ -886,7 +886,6 @@ class LoopMatmul(block_size: Int, coreMaxAddrBits: Int, reservation_station_size
     stC.io.ex_k := 0.U // req.max_k shall be 1
     stC.io.ex_j := ldB.io.j
     stC.io.ex_i := ldB.io.k
-    //ldB.io.rob_overloaded := ld_utilization >= max_lds.U || !((ldA.io.loop_id =/= ldB.io.loop_id) || ldA.io.idle)
   }
 
   val loops_configured = RegInit(0.U(16.W))

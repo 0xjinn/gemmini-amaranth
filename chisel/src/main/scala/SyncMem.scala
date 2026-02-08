@@ -38,7 +38,6 @@ class TwoPortSyncMem[T <: Data](n: Int, t: T, mask_len: Int) extends Module {
 
   assert(!(io.wen && io.ren && io.raddr === io.waddr), "undefined behavior in dual-ported SRAM")
 
-  // val mem = SyncReadMem(n, t)
   val mask_elem = UInt((t.getWidth / mask_len).W)
   val mem = SyncReadMem(n, Vec(mask_len, mask_elem))
 

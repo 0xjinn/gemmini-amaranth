@@ -84,11 +84,9 @@ class ScratchpadWriteIO(val n: Int, val w: Int, val mask_len: Int) extends Bundl
 }
 
 class ReadReqPacket(maxBytes: Int, nXacts: Int, vaddrBits: Int) extends Bundle {
-  // val size = UInt(log2Up(maxBytes+1).W)
   val lg_size = UInt(log2Ceil(log2Ceil(maxBytes+1)).W)
   val bytes_read = UInt(log2Up(maxBytes+1).W)
   val shift = UInt(log2Up(maxBytes).W)
-  //val paddr = UInt(paddrBits.W)
   val vaddr = UInt(vaddrBits.W)
   val source = UInt(log2Up(nXacts).W)
 }
@@ -101,7 +99,6 @@ class ReadRespPacket(maxBytes: Int, nXacts: Int, beatBits: Int) extends Bundle {
 }
 
 class WriteReqPacket(dataWidth: Int, vaddrBits: Int) extends Bundle {
-  // val lg_size = UInt(log2Ceil(log2Ceil(maxBytes+1)).W)
   val data = UInt(dataWidth.W)
   val vaddr = UInt(vaddrBits.W)
   val last = Bool()
@@ -200,9 +197,6 @@ class Scratchpad[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, 
   val spad_w = inputType.getWidth *  block_cols
   val acc_w = accType.getWidth * block_cols
 
-  // val id_node = TLIdentityNode()
-  // val xbar_node = TLXbar()
-
   val reader = Module(new StreamReader(config, max_in_flight_mem_reqs, dataBits, maxBytes, spad_w, acc_w, aligned_to,
     sp_banks * sp_bank_entries, acc_banks * acc_bank_entries, block_rows, use_tlb_register_filter,
     coreMaxAddrBits, coreMaxAddrBits))
@@ -250,9 +244,6 @@ class Scratchpad[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, 
 
     val writeReqPacket = Decoupled(new WriteReqPacket(data_width, coreMaxAddrBits))
     val writeRespPacket = Flipped(Decoupled(new WriteRespPacket(max_in_flight_mem_reqs, maxBytes)))
-
-    // TLB ports
-    // val tlb = Vec(2, new FrontendTLBIO)
 
     // Misc. ports
     val busy = Output(Bool())
@@ -447,19 +438,13 @@ class Scratchpad[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, 
   // For DMA read responses, mvin_scale gets first priority, then mvin_scale_acc, and then zero_writer
   io.dma.read.resp.valid := mvin_scale_finished || mvin_scale_acc_finished || zero_writer_finished
 
-  // io.dma.read.resp.bits.cmd_id := MuxCase(zero_writer.io.resp.bits.tag.cmd_id, Seq(
   io.dma.read.resp.bits.cmd_id := MuxCase(zero_writer_pixel_repeater.io.resp.bits.tag.cmd_id, Seq(
-    // mvin_scale_finished -> mvin_scale_out.bits.tag.cmd_id,
     mvin_scale_finished -> mvin_scale_pixel_repeater.io.resp.bits.tag.cmd_id,
     mvin_scale_acc_finished -> mvin_scale_acc_out.bits.tag.cmd_id))
 
   io.dma.read.resp.bits.bytesRead := MuxCase(zero_writer_bytes_read, Seq(
-    // mvin_scale_finished -> mvin_scale_out.bits.tag.bytes_read,
     mvin_scale_finished -> mvin_scale_pixel_repeater.io.resp.bits.tag.bytes_read,
     mvin_scale_acc_finished -> mvin_scale_acc_out.bits.tag.bytes_read))
-
-  // io.tlb(0) <> writer.io.tlb
-  // io.tlb(1) <> reader.io.tlb
 
   writer.io.flush := io.flush
   reader.io.flush := io.flush
@@ -536,20 +521,15 @@ class Scratchpad[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, 
     bank_ios.zipWithIndex.foreach { case (bio, i) =>
       val exwrite = io.srams.write(i).en
 
-      // val laddr = mvin_scale_out.bits.tag.addr.asTypeOf(local_addr_t) + mvin_scale_out.bits.row
       val laddr = mvin_scale_pixel_repeater.io.resp.bits.laddr
 
-      // val dmaread = mvin_scale_out.valid && !mvin_scale_out.bits.tag.is_acc &&
       val dmaread = mvin_scale_pixel_repeater.io.resp.valid && !mvin_scale_pixel_repeater.io.resp.bits.tag.is_acc &&
         laddr.sp_bank() === i.U
 
       // We need to make sure that we don't try to return a dma read resp from both zero_writer and either mvin_scale
       // or mvin_acc_scale at the same time. The scalers always get priority in those cases
-      /* val zerowrite = zero_writer.io.resp.valid && !zero_writer.io.resp.bits.laddr.is_acc_addr &&
-        zero_writer.io.resp.bits.laddr.sp_bank() === i.U && */
       val zerowrite = zero_writer_pixel_repeater.io.resp.valid && !zero_writer_pixel_repeater.io.resp.bits.laddr.is_acc_addr &&
         zero_writer_pixel_repeater.io.resp.bits.laddr.sp_bank() === i.U &&
-        // !((mvin_scale_out.valid && mvin_scale_out.bits.last) || (mvin_scale_acc_out.valid && mvin_scale_acc_out.bits.last))
         !((mvin_scale_pixel_repeater.io.resp.valid && mvin_scale_pixel_repeater.io.resp.bits.last) || (mvin_scale_acc_out.valid && mvin_scale_acc_out.bits.last))
 
       bio.write.en := exwrite || dmaread || zerowrite
@@ -746,11 +726,9 @@ class Scratchpad[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, 
       io.acc.write(i).ready := true.B
       assert(!(exwrite && !bio.write.ready), "Execute controller write to AccumulatorMem was skipped")
 
-      // val from_mvin_scale = mvin_scale_out.valid && mvin_scale_out.bits.tag.is_acc
       val from_mvin_scale = mvin_scale_pixel_repeater.io.resp.valid && mvin_scale_pixel_repeater.io.resp.bits.tag.is_acc
       val from_mvin_scale_acc = mvin_scale_acc_out.valid && mvin_scale_acc_out.bits.tag.is_acc
 
-      // val mvin_scale_laddr = mvin_scale_out.bits.tag.addr.asTypeOf(local_addr_t) + mvin_scale_out.bits.row
       val mvin_scale_laddr = mvin_scale_pixel_repeater.io.resp.bits.laddr
       val mvin_scale_acc_laddr = mvin_scale_acc_out.bits.tag.addr.asTypeOf(local_addr_t) + mvin_scale_acc_out.bits.row
 
@@ -763,16 +741,12 @@ class Scratchpad[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, 
       val spad_last = mvin_scale_pixel_repeater.io.resp.valid && mvin_scale_pixel_repeater.io.resp.bits.last && !mvin_scale_pixel_repeater.io.resp.bits.tag.is_acc
 
       val dmaread = (from_mvin_scale || from_mvin_scale_acc) &&
-        dmaread_bank === i.U /* &&
-        (mvin_scale_same.B || from_mvin_scale || !spad_dmaread_last) */
+        dmaread_bank === i.U
 
       // We need to make sure that we don't try to return a dma read resp from both zero_writer and either mvin_scale
       // or mvin_acc_scale at the same time. The scalers always get priority in those cases
-      /* val zerowrite = zero_writer.io.resp.valid && zero_writer.io.resp.bits.laddr.is_acc_addr &&
-        zero_writer.io.resp.bits.laddr.acc_bank() === i.U && */
       val zerowrite = zero_writer_pixel_repeater.io.resp.valid && zero_writer_pixel_repeater.io.resp.bits.laddr.is_acc_addr &&
         zero_writer_pixel_repeater.io.resp.bits.laddr.acc_bank() === i.U &&
-        // !((mvin_scale_out.valid && mvin_scale_out.bits.last) || (mvin_scale_acc_out.valid && mvin_scale_acc_out.bits.last))
         !((mvin_scale_pixel_repeater.io.resp.valid && mvin_scale_pixel_repeater.io.resp.bits.last) || (mvin_scale_acc_out.valid && mvin_scale_acc_out.bits.last))
 
       val consecutive_write_block = RegInit(false.B)
@@ -790,14 +764,11 @@ class Scratchpad[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, 
       }
       bio.write.valid := false.B
 
-      // bio.write.bits.acc := MuxCase(zero_writer.io.resp.bits.laddr.accumulate,
       bio.write.bits.acc := MuxCase(zero_writer_pixel_repeater.io.resp.bits.laddr.accumulate,
         Seq(exwrite -> io.acc.write(i).bits.acc,
-          // from_mvin_scale -> mvin_scale_out.bits.tag.accumulate,
           from_mvin_scale -> mvin_scale_pixel_repeater.io.resp.bits.tag.accumulate,
           from_mvin_scale_acc -> mvin_scale_acc_out.bits.tag.accumulate))
 
-      // bio.write.bits.addr := MuxCase(zero_writer.io.resp.bits.laddr.acc_row(),
       bio.write.bits.addr := MuxCase(zero_writer_pixel_repeater.io.resp.bits.laddr.acc_row(),
         Seq(exwrite -> io.acc.write(i).bits.addr,
           (from_mvin_scale || from_mvin_scale_acc) -> dmaread_row))
@@ -809,14 +780,12 @@ class Scratchpad[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, 
       }.elsewhen (dmaread && !spad_last && !consecutive_write_block) {
         bio.write.valid := true.B
         bio.write.bits.data := Mux(from_mvin_scale,
-          // VecInit(mvin_scale_out.bits.out.map(e => e.withWidthOf(accType))).asTypeOf(acc_row_t),
           VecInit(mvin_scale_pixel_repeater.io.resp.bits.out.map(e => e.withWidthOf(accType))).asTypeOf(acc_row_t),
           mvin_scale_acc_out.bits.out.asTypeOf(acc_row_t))
         bio.write.bits.mask :=
           Mux(from_mvin_scale,
             {
               val n = accType.getWidth / inputType.getWidth
-              // val mask = mvin_scale_out.bits.tag.mask take ((spad_w / (aligned_to * 8)) max 1)
               val mask = mvin_scale_pixel_repeater.io.resp.bits.mask take ((spad_w / (aligned_to * 8)) max 1)
               val expanded = VecInit(mask.flatMap(e => Seq.fill(n)(e)))
               expanded
@@ -917,7 +886,6 @@ class StreamReader[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T
   core.io.reqPacket <> io.reqPacket
   core.io.respPacket <> io.respPacket
 
-  // io.tlb <> core.io.tlb
   io.busy := xactTracker.io.busy
   core.io.flush := io.flush
 
@@ -988,7 +956,6 @@ class StreamReaderCore[T <: Data, U <: Data, V <: Data](config: GemminiArrayConf
     val reqPacket = Decoupled(new ReadReqPacket(maxBytes, nXacts, vaddrBits))
     val respPacket = Flipped(Decoupled(new ReadRespPacket(maxBytes, nXacts, beatBits)))
 
-    // val tlb = new FrontendTLBIO
     val flush = Input(Bool())
     val counter = new CounterEventIO()
   })
@@ -1016,7 +983,6 @@ class StreamReaderCore[T <: Data, U <: Data, V <: Data](config: GemminiArrayConf
     val vaddr_offset = if (s > 1) vaddr(lg_s-1, 0) else 0.U
 
     val packet = Wire(new ReadReqPacket(maxBytes, nXacts, vaddrBits))
-    // packet.size := s.U
     packet.lg_size := lg_s.U
     packet.bytes_read := minOf(s.U - vaddr_offset, bytesLeft)
     packet.shift := vaddr_offset
@@ -1033,25 +999,7 @@ class StreamReaderCore[T <: Data, U <: Data, V <: Data](config: GemminiArrayConf
   val read_bytes_read = read_packet.bytes_read
   val read_shift = read_packet.shift
 
-  // Firing off TileLink read requests and allocating space inside the reservation buffer for them
-  // val get = edge.Get(
-  //   fromSource = io.reserve.xactid,
-  //   toAddress = 0.U, //read_paddr,
-  //   lgSize = read_lg_size
-  // )._2
-
-  // class TLBundleAWithInfo extends Bundle {
-  //   val tl_a = tl.a.bits.cloneType
-  //   val vaddr = Output(UInt(vaddrBits.W))
-  //   val status = Output(new MStatus)
-  // }
-
-  // val untranslated_a = Wire(Decoupled(new TLBundleAWithInfo))
-  // untranslated_a.valid := state === s_req_new_block && io.reserve.ready
-  // untranslated_a.bits.tl_a := get
-  // untranslated_a.bits.vaddr := read_vaddr
-  // untranslated_a.bits.status := req.status
-
+  // Firing off read requests and allocating space inside the reservation buffer for them
   io.reqPacket.valid := state === s_req_new_block && io.reserve.ready
   io.reqPacket.bits.vaddr := read_vaddr
   io.reqPacket.bits.lg_size := read_lg_size
@@ -1059,12 +1007,6 @@ class StreamReaderCore[T <: Data, U <: Data, V <: Data](config: GemminiArrayConf
   io.reqPacket.bits.shift := read_shift
   io.reqPacket.bits.source := io.reserve.xactid
 
-  // tl.a.valid := state === s_req_new_block && io.reserve.ready
-  // tl.a.bits := get
-  // tl.a.bits.address := read_vaddr
-
-  // io.reserve.valid := state === s_req_new_block && untranslated_a.ready // TODO decouple "reserve.valid" from "tl.a.ready"
-  // io.reserve.valid := state === s_req_new_block && tl.a.ready
   io.reserve.valid := state === s_req_new_block && io.reqPacket.ready
   io.reserve.entry.shift := read_shift
   io.reserve.entry.is_acc := req.is_acc
@@ -1089,14 +1031,11 @@ class StreamReaderCore[T <: Data, U <: Data, V <: Data](config: GemminiArrayConf
   io.reserve.entry.spad_row_offset := Mux(req.has_acc_bitwidth, bytesRequested % accWidthBytes.U, bytesRequested % spadWidthBytes.U)
 
   when (io.reqPacket.fire) {
-  // when (untranslated_a.fire) {
-    val next_vaddr = req.vaddr + read_bytes_read // send_size
-    // val new_page = next_vaddr(pgIdxBits-1, 0) === 0.U
+    val next_vaddr = req.vaddr + read_bytes_read
     req.vaddr := next_vaddr
 
-    bytesRequested := bytesRequested + read_bytes_read // send_size
+    bytesRequested := bytesRequested + read_bytes_read
 
-    // when (send_size >= bytesLeft) {
     when (read_bytes_read >= bytesLeft) {
       // We're done with this request at this point
       state_machine_ready_for_req := true.B
@@ -1104,18 +1043,8 @@ class StreamReaderCore[T <: Data, U <: Data, V <: Data](config: GemminiArrayConf
     }
   }
 
-  // Forward TileLink read responses to the reservation buffer
-  
-  // tl.d.ready := io.beatData.ready
-  // Select the size and mask of the TileLink request
-  
+  // Forward read responses to the reservation buffer
   io.respPacket.ready := io.beatData.ready
-
-  // io.beatData.valid := tl.d.valid
-  // io.beatData.bits.xactid := tl.d.bits.source
-  // io.beatData.bits.data := tl.d.bits.data
-  // io.beatData.bits.lg_len_req := tl.d.bits.size
-  // io.beatData.bits.last := edge.last(tl.d)
 
   io.beatData.valid := io.respPacket.valid
   io.beatData.bits.xactid := io.respPacket.bits.source
@@ -1135,7 +1064,6 @@ class StreamReaderCore[T <: Data, U <: Data, V <: Data](config: GemminiArrayConf
   io.counter := DontCare
   CounterEventIO.init(io.counter)
   io.counter.connectEventSignal(CounterEvent.RDMA_ACTIVE_CYCLE, state =/= s_idle)
-  io.counter.connectEventSignal(CounterEvent.RDMA_TLB_WAIT_CYCLES, false.B)
   io.counter.connectEventSignal(CounterEvent.RDMA_TL_WAIT_CYCLES, io.reqPacket.valid && !io.reqPacket.ready)
 
   // External counters
@@ -1214,7 +1142,7 @@ class StreamWriter[T <: Data: Arithmetic](nXacts: Int, beatBits: Int, maxBytes: 
 
   val vaddr = req.vaddr
 
-  // Select the size and mask of the TileLink request
+  // Select the size and mask of the write request
   class Packet extends Bundle {
     val size = UInt(log2Ceil(maxBytes+1).W)
     val lg_size = UInt(log2Ceil(log2Ceil(maxBytes+1)+1).W)
@@ -1231,8 +1159,7 @@ class StreamWriter[T <: Data: Arithmetic](nXacts: Int, beatBits: Int, maxBytes: 
   val smallest_write_size = aligned_to max beatBytes
   val write_sizes = (smallest_write_size to maxBytes by aligned_to).
     filter(s => isPow2(s)).
-    filter(s => s % beatBytes == 0) /*.
-    filter(s => s <= dataBytes*2 || s == smallest_write_size)*/
+    filter(s => s % beatBytes == 0)
   val write_packets = write_sizes.map { s =>
     val lg_s = log2Ceil(s)
     val vaddr_aligned_to_size = if (s == 1) vaddr else Cat(vaddr(vaddrBits-1, lg_s), 0.U(lg_s.W))
@@ -1291,26 +1218,7 @@ class StreamWriter[T <: Data: Arithmetic](nXacts: Int, beatBits: Int, maxBytes: 
 
   val bytes_written_this_beat = write_packet.bytes_written_per_beat(beatsSent)
 
-  // Firing off TileLink write requests
-  // val putFull = edge.Put(
-  //   fromSource = RegEnableThru(xactId, state === s_writing_new_block),
-  //   toAddress = 0.U,
-  //   lgSize = lg_write_size,
-  //   data = (data >> (bytesSent * 8.U)).asUInt
-  // )._2
-
-  // val putPartial = edge.Put(
-  //   fromSource = RegEnableThru(xactId, state === s_writing_new_block),
-  //   toAddress = 0.U,
-  //   lgSize = lg_write_size,
-  //   data = ((data >> (bytesSent * 8.U)) << (write_shift * 8.U)).asUInt,
-  //   mask = write_mask.asUInt
-  // )._2
-
-  // tl.a.valid := (state === s_writing_new_block || state === s_writing_beats) && !xactBusy.andR
-  // tl.a.bits := Mux(write_full, putFull, putPartial)
-  // tl.a.bits.address := write_vaddr
-
+  // Firing off write requests
   io.reqPacket.valid := (state === s_writing_new_block || state === s_writing_beats) && !xactBusy.andR
 
   io.reqPacket.bits.data := Mux(write_full,
@@ -1319,62 +1227,9 @@ class StreamWriter[T <: Data: Arithmetic](nXacts: Int, beatBits: Int, maxBytes: 
   io.reqPacket.bits.vaddr := write_vaddr
   io.reqPacket.bits.last := Mux(state === s_writing_new_block, write_beats === 1.U, beatsLeft === 1.U)
 
-  // class TLBundleAWithInfo extends Bundle {
-  //   val tl_a = tl.a.bits.cloneType
-  //   val vaddr = Output(UInt(vaddrBits.W))
-  //   val status = Output(new MStatus)
-  // }
-
-  // val untranslated_a = Wire(Decoupled(new TLBundleAWithInfo))
-  // xactBusy_fire := untranslated_a.fire && state === s_writing_new_block
-  // untranslated_a.valid := (state === s_writing_new_block || state === s_writing_beats) && !xactBusy.andR
-  // untranslated_a.bits.tl_a := Mux(write_full, putFull, putPartial)
-  // untranslated_a.bits.vaddr := write_vaddr
-  // untranslated_a.bits.status := req.status
-
-  // 0 goes to retries, 1 goes to state machine
-  // val retry_a = Wire(Decoupled(new TLBundleAWithInfo))
-  // val shadow_retry_a = Module(new Queue(new TLBundleAWithInfo, 1))
-  // shadow_retry_a.io.enq.valid := false.B
-  // shadow_retry_a.io.enq.bits := DontCare
-
-  // val tlb_arb = Module(new Arbiter(new TLBundleAWithInfo, 3))
-  // tlb_arb.io.in(0) <> retry_a
-  // tlb_arb.io.in(1) <> shadow_retry_a.io.deq
-  // tlb_arb.io.in(2) <> untranslated_a
-
-  // val tlb_q = Module(new Queue(new TLBundleAWithInfo, 1, pipe=true))
-  // tlb_q.io.enq <> tlb_arb.io.out
-
-  // io.tlb.req.valid := tlb_q.io.deq.fire
-  // io.tlb.req.bits := DontCare
-  // io.tlb.req.bits.tlb_req.vaddr := tlb_q.io.deq.bits.vaddr
-  // io.tlb.req.bits.tlb_req.passthrough := false.B
-  // io.tlb.req.bits.tlb_req.size := 0.U // send_size
-  // io.tlb.req.bits.tlb_req.cmd := M_XWR
-  // io.tlb.req.bits.status := tlb_q.io.deq.bits.status
-
-  // val translate_q = Module(new Queue(new TLBundleAWithInfo, 1, pipe=true))
-  // translate_q.io.enq <> tlb_q.io.deq
-  // when (retry_a.valid) {
-  //   translate_q.io.enq.valid := false.B
-  //   shadow_retry_a.io.enq.valid := tlb_q.io.deq.valid
-  //   shadow_retry_a.io.enq.bits  := tlb_q.io.deq.bits
-  // }
-  // translate_q.io.deq.ready := tl.a.ready || io.tlb.resp.miss
-
-  // retry_a.valid := translate_q.io.deq.valid && io.tlb.resp.miss
-  // retry_a.bits := translate_q.io.deq.bits
-  // assert(!(retry_a.valid && !retry_a.ready))
-
-  // tl.a.valid := translate_q.io.deq.valid && !io.tlb.resp.miss
-  // tl.a.bits := translate_q.io.deq.bits.tl_a
-  // tl.a.bits.address := RegEnableThru(io.tlb.resp.paddr, RegNext(io.tlb.req.fire))
-
   io.respPacket.ready := true.B
 
   when (io.reqPacket.fire) {
-  // when (untranslated_a.fire) {
     when (state === s_writing_new_block) {
       beatsLeft := write_beats - 1.U
 
@@ -1438,7 +1293,6 @@ class StreamWriter[T <: Data: Arithmetic](nXacts: Int, beatBits: Int, maxBytes: 
   io.counter := DontCare
   CounterEventIO.init(io.counter)
   io.counter.connectEventSignal(CounterEvent.WDMA_ACTIVE_CYCLE, state =/= s_idle)
-  io.counter.connectEventSignal(CounterEvent.WDMA_TLB_WAIT_CYCLES, false.B)
   io.counter.connectEventSignal(CounterEvent.WDMA_TL_WAIT_CYCLES, io.reqPacket.valid && !io.reqPacket.ready)
 
   // External counters

@@ -1,14 +1,8 @@
 import chisel3._
 import chisel3.util._
 
-// import freechips.rocketchip.tile.RoCCCommand
-// import freechips.rocketchip.util.PlusArg
-
 import GemminiISA._
 import Util._
-
-// import midas.targetutils.PerfCounter
-// import midas.targetutils.SynthesizePrintf
 
 
 // TODO unify this class with GemminiCmdWithDeps
@@ -85,11 +79,6 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
     val opa = UDValid(new OpT)
     val opa_is_dst = Bool()
     val opb = UDValid(new OpT)
-
-    // val op1 = UDValid(new OpT)
-    // val op1 = UDValid(new OpT)
-    // val op2 = UDValid(new OpT)
-    // val dst = UDValid(new OpT)
 
     val issued = Bool()
 
@@ -490,7 +479,6 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
     }
   }
 
-  // val utilization = PopCount(entries.map(e => e.valid))
   val utilization_ld_q_unissued = PopCount(entries.map(e => e.valid && !e.bits.issued && e.bits.q === ldq))
   val utilization_st_q_unissued = PopCount(entries.map(e => e.valid && !e.bits.issued && e.bits.q === stq))
   val utilization_ex_q_unissued = PopCount(entries.map(e => e.valid && !e.bits.issued && e.bits.q === exq))
@@ -512,7 +500,6 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
   val pop_count_packed_deps = VecInit(entries.map(e => Mux(e.valid,
     PopCount(e.bits.deps_ld) + PopCount(e.bits.deps_ex) + PopCount(e.bits.deps_st), 0.U)))
   val min_pop_count = pop_count_packed_deps.reduce((acc, d) => minOf(acc, d))
-  // assert(min_pop_count < 2.U)
   dontTouch(pop_count_packed_deps)
   dontTouch(min_pop_count)
 
@@ -539,23 +526,8 @@ class ReservationStation[T <: Data : Arithmetic, U <: Data, V <: Data](config: G
     printf(p"Utilization st q: $utilization_st_q\n")
     printf(p"Utilization ex q: $utilization_ex_q\n")
 
-    // if (use_firesim_simulation_counters) {
-    //   printf(SynthesizePrintf("Utilization: %d\n", utilization))
-    //   printf(SynthesizePrintf("Utilization ld q (incomplete): %d\n", utilization_ld_q_unissued))
-    //   printf(SynthesizePrintf("Utilization st q (incomplete): %d\n", utilization_st_q_unissued))
-    //   printf(SynthesizePrintf("Utilization ex q (incomplete): %d\n", utilization_ex_q_unissued))
-    //   printf(SynthesizePrintf("Utilization ld q: %d\n", utilization_ld_q))
-    //   printf(SynthesizePrintf("Utilization st q: %d\n", utilization_st_q))
-    //   printf(SynthesizePrintf("Utilization ex q: %d\n", utilization_ex_q))
-    // }
-
     printf(p"Packed deps: $packed_deps\n")
   }
-
-  // if (use_firesim_simulation_counters) {
-  //   PerfCounter(io.busy, "reservation_station_busy", "cycles where reservation station has entries")
-  //   PerfCounter(!io.alloc.ready, "reservation_station_full", "cycles where reservation station is full")
-  // }
 
   when (reset.asBool) {
     entries.foreach(_.valid := false.B)

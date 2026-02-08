@@ -259,9 +259,6 @@ object GemminiArray extends App {
   val input_type = Float(8, 24)
   val output_type = Float(8, 24)
   val acc_type = Float(8, 24)
-  // val input_type = SInt(32.W)
-  // val output_type = SInt(32.W)
-  // val acc_type = SInt(32.W)
 
   val dataflow = Dataflow.WS
   val meshColumns = 8

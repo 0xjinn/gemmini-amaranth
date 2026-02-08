@@ -55,7 +55,6 @@ class DMACommandTracker[T <: Data](val nCmds: Int, val maxBytes: Int, tag_t: => 
     }
   }
 
-  // val cmds = RegInit(VecInit(Seq.fill(nCmds)(entry_init)))
   val cmds = Reg(Vec(nCmds, new Entry))
   val cmd_valids = cmds.map(_.valid)
 

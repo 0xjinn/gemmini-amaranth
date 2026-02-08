@@ -2,8 +2,6 @@ import chisel3._
 import chisel3.util._
 
 import Util._
-// import org.chipsalliance.cde.config.Parameters
-// import midas.targetutils.PerfCounter
 
 class TransposePreloadUnroller[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V], xLen: Int) extends Module {
   import config._

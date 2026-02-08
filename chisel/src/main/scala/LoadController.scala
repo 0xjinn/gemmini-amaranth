@@ -3,9 +3,6 @@ import chisel3.util._
 import GemminiISA._
 import Util._
 
-// import org.chipsalliance.cde.config.Parameters
-// import midas.targetutils.PerfCounter
-
 // TODO we need to check for WAW errors here
 // TODO deal with errors when reading scratchpad responses
 class LoadController[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig[T, U, V], coreMaxAddrBits: Int, local_addr_t: LocalAddr) extends Module {
@@ -176,10 +173,6 @@ class LoadController[T <: Data, U <: Data, V <: Data](config: GemminiArrayConfig
   io.counter.connectEventSignal(CounterEvent.LOAD_ACTIVE_CYCLE, control_state === sending_rows)
   io.counter.connectEventSignal(CounterEvent.LOAD_DMA_WAIT_CYCLE, control_state === waiting_for_dma_req_ready)
   io.counter.connectEventSignal(CounterEvent.LOAD_SCRATCHPAD_WAIT_CYCLE, io.dma.req.valid && !io.dma.req.ready)
-
-  // if (use_firesim_simulation_counters) {
-  //   PerfCounter(io.dma.req.valid && !io.dma.req.ready, "load_dma_wait_cycle", "cycles during which load controller is waiting for DMA to be available")
-  // }
 
   // Assertions
   assert(!(cmd_tracker.io.alloc.fire() && cmd_tracker.io.alloc.bits.bytes_to_read === 0.U), "A single mvin instruction must load more than 0 bytes")

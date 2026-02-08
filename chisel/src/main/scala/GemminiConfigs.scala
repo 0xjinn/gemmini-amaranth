@@ -1,7 +1,6 @@
 import scala.math.{max, pow, sqrt}
 import chisel3._
 import chisel3.util._
-// import freechips.rocketchip.tile._
 
 sealed abstract trait GemminiMemCapacity
 case class CapacityInKilobytes(kilobytes: Int) extends GemminiMemCapacity
@@ -330,11 +329,6 @@ case class GemminiArrayConfig[T <: Data : Arithmetic, U <: Data, V <: Data](
 
 
     val opcodeid = "undefined"
-    // val opcodeid = Seq(
-    //   OpcodeSet.custom0, OpcodeSet.custom1, OpcodeSet.custom2, OpcodeSet.custom3
-    // ).indexWhere(o => o.opcodes(0).litValue == opcodes.opcodes(0).litValue)
-    // println(opcodeid, opcodes.opcodes)
-    // require (opcodeid != -1 && opcodes.opcodes.size == 1)
     header ++= s"#define XCUSTOM_ACC $opcodeid\n"
 
     header ++= s"#define DIM ${tileColumns*meshColumns}\n"

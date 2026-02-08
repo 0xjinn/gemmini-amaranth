@@ -2,8 +2,6 @@ import chisel3._
 import chisel3.util._
 import chisel3.experimental._
 
-// import freechips.rocketchip.tile.RoCCCommand
-// import org.chipsalliance.cde.config.Parameters
 import GemminiISA._
 import LocalAddr._
 import Util._
@@ -66,7 +64,6 @@ class LoopConvDerivedParams(val large_iterator_bitwidth: Int, val small_iterator
   val input_spad_stride = UInt(large_iterator_bitwidth.W)
   val weight_spad_stride = UInt(large_iterator_bitwidth.W)
 
-  // val ex_overwrite = Bool()
 }
 
 class LoopConvLdBiasReq(val coreMaxAddrBits: Int, val large_iterator_bitwidth: Int, val small_iterator_bitwidth: Int, val tiny_iterator_bitwidth: Int, val max_acc_addr: Int, val concurrent_loops: Int)  extends Bundle {
@@ -660,14 +657,10 @@ class LoopConvExecute(block_size: Int, large_iterator_bitwidth: Int, small_itera
     a_addr_start +& (b / block_size.U) * input_spad_stride +& kch * (irows >> req.downsample) * (icols >> req.downsample) +& (irow >> req.downsample) * (icols >> req.downsample) +& (icol >> req.downsample),
     a_addr_start +& (kch / block_size.U(kch.getWidth.W)) * input_spad_stride +& b * (irows >> req.downsample) * (icols >> req.downsample) +& (irow >> req.downsample) * (icols >> req.downsample) +& (icol >> req.downsample))
 
-  // val c_addr = Mux(ex_overwrite && krow === 0.U && kcol === 0.U && kch === 0.U, d_addr_start, c_addr_start) +&
-  //   (och / block_size.U) * batches * orows * ocols +& b * orows * ocols +& orow * ocols +& ocol
-
   // The width expansions are added here solely to prevent Verilator's "WIDTH" warnings, despite making the code uglier
   val c_addr = c_addr_start +&
     (och / block_size.U(och.getWidth.W)) * batches * orows * ocols +& b * orows * ocols +& orow * ocols +& ocol
 
-  // val new_weights = b === 0.U && orow === 0.U && ocol === 0.U
   val new_weights = Reg(Bool())
   val krow_rot = Mux(req.wrot180, krows - krow - 1.U, krow)
   val kcol_rot = Mux(req.wrot180, kcols - kcol - 1.U, kcol)
@@ -1395,7 +1388,6 @@ class LoopConv (block_size: Int, coreMaxAddrBits: Int, reservation_station_size:
     loop_requesting_ld_bias.running := true.B
     loop_requesting_ld_bias.ld_bias_started := true.B
 
-    // when (loop_requesting_ld_bias.bias_dram_addr =/= 0.U) {
     when (loop_requesting_ld_bias.output_dram_addr =/= 0.U) {
       ld_bias_addr_start := floorAdd(ld_bias_addr_start, (max_acc_addr / concurrent_loops).U, max_acc_addr.U)
     }
