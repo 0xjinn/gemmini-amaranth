@@ -54,7 +54,9 @@ async def cocotb_init(dut, config_cls=None):
 
 
 def cocotb_run(dut, config=None, module=None, sim="verilator", testfilter=None, always=False, waves=False, timescale=("1ns", "1ps"),
-    test_args=[], build_args=[], logtest=False, stdout_loglevel="WARNING", build_dir=None):
+    test_args=None, build_args=None, logtest=False, stdout_loglevel="WARNING", build_dir=None):
+    test_args = test_args or []
+    build_args = build_args or []
     os.environ["GPI_LOG_LEVEL"] = os.getenv("GPI_LOG_LEVEL", stdout_loglevel)
     os.environ["COCOTB_LOG_LEVEL"] = os.getenv("COCOTB_LOG_LEVEL", stdout_loglevel)
 
@@ -78,9 +80,7 @@ def cocotb_run(dut, config=None, module=None, sim="verilator", testfilter=None, 
         os.environ["COCOTB_TEST_FILTER"] = testfilter
 
     if sim == "verilator":
-        build_args += ["--Wno-fatal"]
-        if not os.getenv("CI"):
-            build_args += ["--quiet"]
+        build_args += ["--Wno-fatal", "--quiet"]
     if waves and sim == "verilator":
         build_args += ["--trace-fst"]
 
@@ -98,10 +98,11 @@ def cocotb_run(dut, config=None, module=None, sim="verilator", testfilter=None, 
     if config is not None and hasattr(config, "get_verilog_sources"):
         srcs.extend(config.get_verilog_sources())
 
+    ci = os.getenv("CI")
     runner.build(sources=srcs, hdl_toplevel=top, build_args=build_args, always=always, waves=waves, build_dir=sim_dir,
-        timescale=timescale, log_file=sim_dir / "build.log")
+        timescale=timescale, log_file=None if ci else sim_dir / "build.log")
     runner.test(hdl_toplevel=top, test_module=module, waves=waves, test_args=test_args, build_dir=sim_dir, test_dir=sim_dir,
-        log_file=sim_dir / "test.log" if logtest else None)
+        log_file=None if ci else (sim_dir / "test.log" if logtest else None))
 
 
 # stream -> queue
