@@ -23,7 +23,7 @@ class GemminiConfig:
     tile_rows: int = 1
     tile_columns: int = 1
     dtype: str = "int8"
-    dataflow: str | None = None
+    dataflow: str = "WS"
     sp_capacity_kb: int = 256
     acc_capacity_kb: int = 64
     sp_banks: int = 4
@@ -117,7 +117,7 @@ class GemminiConfig:
 
     def _build_dir(self):
         h = hashlib.sha256(str(asdict(self)).encode()).hexdigest()[:12]
-        return Path(__file__).resolve().parent.parent / "build" / h
+        return Path(__file__).resolve().parent / "build" / h
 
     def get_verilog_sources(self):
         vsrc = Path(__file__).resolve().parent / "chisel" / "src" / "main" / "resources" / "vsrc"
