@@ -108,12 +108,13 @@ class GemminiConfig:
         from gemmini_amaranth.generate import build_gen_params, generate_verilog
 
         always = bool(int(os.environ.get("ALWAYS", "0")))
+        verbose = bool(int(os.environ.get("VERBOSE", "0")))
         output_dir = self._build_dir()
 
         if always or not any(output_dir.glob("*.v")):
             gen_params = build_gen_params(
                 **{k: v for k, v in asdict(self).items() if k not in _WRAPPER_FIELDS and v is not None})
-            generate_verilog(gen_params, output_dir)
+            generate_verilog(gen_params, output_dir, verbose=verbose)
 
     def _build_dir(self):
         h = hashlib.sha256(str(asdict(self)).encode()).hexdigest()[:12]
