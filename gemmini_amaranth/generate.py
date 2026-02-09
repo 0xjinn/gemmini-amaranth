@@ -8,7 +8,6 @@ build to produce Gemmini Verilog.  It is used both by the CLI entry-point
 import argparse
 import hashlib
 import json
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -67,6 +66,11 @@ DTYPE_MAP = {
 PRESETS = ["default", "chip", "largeChip", "lean", "fp32", "fp16", "bf16"]
 
 # ---------------------------------------------------------------------------
+# Chisel directory — bundled as package data in gemmini_amaranth/chisel/
+# ---------------------------------------------------------------------------
+CHISEL_DIR = Path(__file__).resolve().parent / "chisel"
+
+# ---------------------------------------------------------------------------
 # Chisel dependencies — cloned automatically if missing
 # ---------------------------------------------------------------------------
 DEPS = {
@@ -74,32 +78,7 @@ DEPS = {
         "url": "https://github.com/ucb-bar/berkeley-hardfloat.git",
         "commit": "26f00d00c3f3f57480065e02bfcfde3d3b41ec51",
     },
-    "cde": {
-        "url": "https://github.com/chipsalliance/cde.git",
-        "commit": "2bcaeae2b9914bd25497ce3c6fa62dc5ca80e09f",
-    },
 }
-
-
-def find_chisel_dir():
-    """Locate the Chisel source directory.
-
-    Checks ``GEMMINI_CHISEL_DIR`` env var first, then falls back to
-    ``<package-root>/../chisel``.
-    """
-    env = os.environ.get("GEMMINI_CHISEL_DIR")
-    if env:
-        p = Path(env)
-        if not p.is_dir():
-            raise FileNotFoundError(f"GEMMINI_CHISEL_DIR={env} is not a directory")
-        return p
-    default = Path(__file__).resolve().parent.parent / "chisel"
-    if not default.is_dir():
-        raise FileNotFoundError(
-            f"Chisel directory not found at {default}. "
-            "Set GEMMINI_CHISEL_DIR or clone the chisel sources."
-        )
-    return default
 
 
 def ensure_deps(chisel_dir):
@@ -302,14 +281,9 @@ def augment_config_json(gemmini_args, output_dir, dtype=None):
     print(f"Config JSON: {config_path}")
 
 
-def generate_verilog(gen_params, output_dir, chisel_dir=None, verbose=False):
-    """Orchestrate Verilog generation: find chisel dir, ensure deps, validate, run sbt, augment JSON."""
-    if chisel_dir is None:
-        chisel_dir = find_chisel_dir()
-    else:
-        chisel_dir = Path(chisel_dir)
-
-    ensure_deps(chisel_dir)
+def generate_verilog(gen_params, output_dir, verbose=False):
+    """Orchestrate Verilog generation: ensure deps, validate, run sbt, augment JSON."""
+    ensure_deps(CHISEL_DIR)
     validate_params(gen_params)
 
     output_dir = Path(output_dir)
@@ -323,7 +297,7 @@ def generate_verilog(gen_params, output_dir, chisel_dir=None, verbose=False):
         print(f"  Parameters: {json.dumps(gen_params, indent=2)}")
 
     print("Generating Gemmini Verilog...")
-    run_sbt(sbt_cmd, chisel_dir, verbose)
+    run_sbt(sbt_cmd, CHISEL_DIR, verbose)
 
     # Verify output files
     verilog_file = output_dir / "Gemmini.v"
@@ -403,7 +377,6 @@ Example usage:
     p.add_argument("--no-nonlinear-activations", action="store_true")
     p.add_argument("--output-dir", type=str, default=None,
                     help="Output directory (default: build/<config-hash>)")
-    p.add_argument("--chisel-dir", type=str, default=None, help="Chisel source directory")
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--verbose", action="store_true")
     return p.parse_args(argv)
@@ -412,8 +385,6 @@ Example usage:
 def cli_main(argv=None):
     """CLI entry point for Gemmini Verilog generation."""
     args = _parse_args(argv)
-
-    chisel_dir = Path(args.chisel_dir) if args.chisel_dir else find_chisel_dir()
 
     # Build gen_params from CLI args
     cli_kwargs = {}
@@ -447,9 +418,9 @@ def cli_main(argv=None):
 
     if args.dry_run:
         print("Dry run - would execute:")
-        print(f"  cd {chisel_dir}")
+        print(f"  cd {CHISEL_DIR}")
         print(f"  {sbt_cmd}")
         print(f"  output: {output_dir}")
         return
 
-    generate_verilog(gen_params, output_dir, chisel_dir, args.verbose)
+    generate_verilog(gen_params, output_dir, args.verbose)

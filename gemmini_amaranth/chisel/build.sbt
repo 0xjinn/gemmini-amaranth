@@ -42,10 +42,6 @@ def freshProject(name: String, dir: File): Project = {
     )
 }
 
-lazy val cde = (project in file("cde"))
-  .settings(commonSettings)
-  .settings(Compile / scalaSource := baseDirectory.value / "cde/src/chipsalliance/rocketchip")
-
 lazy val hardfloat = freshProject("berkeley-hardfloat", file("berkeley-hardfloat/hardfloat"))
   .settings(chiselSettings)
   .settings(commonSettings)
