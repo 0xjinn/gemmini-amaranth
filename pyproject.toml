@@ -7,7 +7,7 @@ license = "BSD-3-Clause"
 dependencies = [
     "numpy",
     "amaranth[builtin-yosys]",
-    "amaranth-soc @ git+https://github.com/amaranth-lang/amaranth-soc.git",
+    "amaranth-soc",
 ]
 
 [project.urls]
