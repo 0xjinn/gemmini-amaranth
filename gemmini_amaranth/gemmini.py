@@ -121,8 +121,7 @@ class GemminiConfig:
         return Path(__file__).resolve().parent / "build" / h
 
     def get_verilog_sources(self):
-        vsrc = Path(__file__).resolve().parent / "chisel" / "src" / "main" / "resources" / "vsrc"
-        return sorted(self._build_dir().glob("*.v")) + sorted(vsrc.glob("*.v"))
+        return sorted(self._build_dir().glob("*.v"))
 
 
 CMD_LAYOUT = data.StructLayout({"funct": 7, "rs1": 64, "rs2": 64, "xd": 1, "rd": 5})
