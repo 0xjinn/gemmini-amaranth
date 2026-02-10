@@ -221,5 +221,6 @@ CONFIGS = [
 @pytest.mark.parametrize("cfg_kwargs", CONFIGS)
 def test_gemmini(cfg_kwargs):
     config = GemminiConfig(**cfg_kwargs)
+    config.generate(always=ALWAYS)
     dut = Gemmini(config)
     cocotb_run(dut, config, always=ALWAYS)

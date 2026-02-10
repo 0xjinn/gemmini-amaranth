@@ -740,25 +740,8 @@ class GemminiProgram:
 
 if __name__ == "__main__":
     import argparse, json as _json
-    from types import SimpleNamespace
+    from gemmini_amaranth.gemmini import GemminiConfig
 
-    def _cli_config(dim, input_bytes, acc_bytes, sp_capacity_kb=256, acc_capacity_kb=64,
-                    sp_banks=4, acc_banks=2, dma_buswidth=128):
-        """Build a lightweight config namespace for CLI use (no Verilog generation)."""
-        input_width = input_bytes * 8
-        acc_width = acc_bytes * 8
-        block_rows = block_cols = dim
-        return SimpleNamespace(
-            block_rows=block_rows, block_cols=block_cols,
-            input_bytes=input_bytes, acc_bytes=acc_bytes,
-            input_width=input_width, acc_width=acc_width,
-            sp_banks=sp_banks, acc_banks=acc_banks,
-            sp_bank_entries=sp_capacity_kb * 1024 * 8 // (sp_banks * block_cols * input_width),
-            acc_bank_entries=acc_capacity_kb * 1024 * 8 // (acc_banks * block_cols * acc_width),
-            sp_rows=sp_banks * (sp_capacity_kb * 1024 * 8 // (sp_banks * block_cols * input_width)),
-            acc_rows=acc_banks * (acc_capacity_kb * 1024 * 8 // (acc_banks * block_cols * acc_width)),
-            beat_bytes=dma_buswidth // 8,
-        )
 
     parser = argparse.ArgumentParser(description="Gemmini instruction generator")
     sub = parser.add_subparsers(dest="command")
@@ -802,13 +785,15 @@ if __name__ == "__main__":
     if hasattr(args, 'in_w') and args.in_w is None and hasattr(args, 'in_h'):
         args.in_w = args.in_h
 
+    ib = args.input_bytes
+    cfg = GemminiConfig.fromdict({"mesh_rows": args.dim, "mesh_columns": args.dim,
+                                  "input_width": ib * 8, "acc_width": args.acc_bytes * 8})
+    prog = GemminiProgram(cfg)
+
     if args.command == "matmul":
-        ib = args.input_bytes
         a_addr = args.a_addr
         b_addr = args.b_addr if args.b_addr is not None else a_addr + args.M * args.K * ib
         c_addr = args.c_addr if args.c_addr is not None else b_addr + args.K * args.N * ib
-        cfg = _cli_config(args.dim, ib, args.acc_bytes)
-        prog = GemminiProgram(cfg)
         instrs = prog.matmul_ws(args.M, args.N, args.K, a_addr, b_addr, c_addr,
                                 D_addr=args.d_addr)
         if args.json:
@@ -822,9 +807,6 @@ if __name__ == "__main__":
             prog.print_program(instrs)
 
     elif args.command == "conv":
-        ib = args.input_bytes
-        cfg = _cli_config(args.dim, ib, args.acc_bytes)
-        prog = GemminiProgram(cfg)
         in_size = args.batch * args.in_h * args.in_w * args.in_c * ib
         w_size = args.kernel ** 2 * args.in_c * args.out_c * ib
         input_addr = args.input_addr

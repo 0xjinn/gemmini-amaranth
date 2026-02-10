@@ -1,5 +1,4 @@
 import hashlib
-import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -12,7 +11,6 @@ from amaranth_soc import csr
 from gemmini_amaranth.bus import AXI4, BurstType, AXI4Lite, AXI4LiteCSRBridge
 
 
-_WRAPPER_FIELDS = frozenset({"vaddr_width", "source_width", "csr_data_width"})
 
 
 @dataclass(frozen=True)
@@ -23,11 +21,13 @@ class GemminiConfig:
     tile_rows: int = 1
     tile_columns: int = 1
     dtype: str = "int8"
+    input_width: int = 8
+    acc_width: int = 32
     dataflow: str = "WS"
-    sp_capacity_kb: int = 256
-    acc_capacity_kb: int = 64
     sp_banks: int = 4
+    sp_bank_entries: int = 256
     acc_banks: int = 2
+    acc_bank_entries: int = 64
     dma_maxbytes: int | None = None
     dma_buswidth: int = 128
     max_in_flight_mem_reqs: int | None = None
@@ -43,22 +43,6 @@ class GemminiConfig:
     csr_offsets = {"status": 0x00}
 
     @property
-    def input_width(self):
-        from gemmini_amaranth.generate import DTYPE_MAP
-        dt = DTYPE_MAP[self.dtype]
-        if dt["inputTypeFamily"] == "float":
-            return int(dt["inputExpWidth"]) + int(dt["inputSigWidth"])
-        return int(dt["inputWidth"])
-
-    @property
-    def acc_width(self):
-        from gemmini_amaranth.generate import DTYPE_MAP
-        dt = DTYPE_MAP[self.dtype]
-        if dt["inputTypeFamily"] == "float":
-            return int(dt["accExpWidth"]) + int(dt["accSigWidth"])
-        return int(dt["accWidth"])
-
-    @property
     def input_bytes(self): return self.input_width // 8
 
     @property
@@ -71,12 +55,12 @@ class GemminiConfig:
     def block_cols(self): return self.mesh_columns * self.tile_columns
 
     @property
-    def sp_bank_entries(self):
-        return self.sp_capacity_kb * 1024 * 8 // (self.sp_banks * self.block_cols * self.input_width)
+    def sp_capacity_kb(self):
+        return self.sp_bank_entries * self.sp_banks * self.block_cols * self.input_width // (1024 * 8)
 
     @property
-    def acc_bank_entries(self):
-        return self.acc_capacity_kb * 1024 * 8 // (self.acc_banks * self.block_cols * self.acc_width)
+    def acc_capacity_kb(self):
+        return self.acc_bank_entries * self.acc_banks * self.block_cols * self.acc_width // (1024 * 8)
 
     @property
     def sp_rows(self): return self.sp_banks * self.sp_bank_entries
@@ -104,16 +88,13 @@ class GemminiConfig:
             object.__setattr__(obj, k, v)
         return obj
 
-    def __post_init__(self):
+    def generate(self, always=False, verbose=False):
+        """Generate Chisel Verilog if not already built for this config."""
         from gemmini_amaranth.generate import build_gen_params, generate_verilog
 
-        always = bool(int(os.environ.get("ALWAYS", "0")))
-        verbose = bool(int(os.environ.get("VERBOSE", "0")))
         output_dir = self._build_dir()
-
         if always or not any(output_dir.glob("*.v")):
-            gen_params = build_gen_params(
-                **{k: v for k, v in asdict(self).items() if k not in _WRAPPER_FIELDS and v is not None})
+            gen_params = build_gen_params(self)
             generate_verilog(gen_params, output_dir, verbose=verbose)
 
     def _build_dir(self):
@@ -273,7 +254,9 @@ class Gemmini(Component):
 
 if __name__ == "__main__":
     from amaranth.back import verilog
-    g = Gemmini(GemminiConfig())
+    config = GemminiConfig()
+    config.generate()
+    g = Gemmini(config)
     with open("gemmini.v", "w") as f:
         f.write(verilog.convert(g, name="Gemmini", emit_src=False))
     print("Generated gemmini.v")

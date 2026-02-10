@@ -173,53 +173,54 @@ def config_hash(gen_params):
 
 
 # Maps user-facing kwargs to Chisel --gemmini-key=value args.
-_PARAM_MAP = {
-    "mesh_rows": "meshRows",
-    "mesh_columns": "meshColumns",
-    "tile_rows": "tileRows",
-    "tile_columns": "tileColumns",
-    "dataflow": "dataflow",
+def _snake_to_camel(name):
+    parts = name.split("_")
+    return parts[0] + "".join(p.capitalize() for p in parts[1:])
+
+
+# Config fields that map directly to --gemmini-key=value Chisel args.
+_GEN_FIELDS = [
+    "mesh_rows", "mesh_columns", "tile_rows", "tile_columns",
+    "dataflow", "sp_banks", "acc_banks", "input_width", "acc_width",
+    "dma_buswidth", "dma_maxbytes", "max_in_flight_mem_reqs",
+]
+
+# Properties that map to Chisel args (not dataclass fields).
+_GEN_PROPS = {
     "sp_capacity_kb": "spCapacityKB",
     "acc_capacity_kb": "accCapacityKB",
-    "sp_banks": "spBanks",
-    "acc_banks": "accBanks",
-    "dma_maxbytes": "dmaMaxbytes",
-    "dma_buswidth": "dmaBuswidth",
-    "max_in_flight_mem_reqs": "maxInFlightMemReqs",
+}
+
+# Boolean flags (True → "false" because Chisel defaults are true).
+_GEN_FLAGS = {
+    "no_training_convs": "hasTrainingConvs",
+    "no_max_pool": "hasMaxPool",
+    "no_nonlinear_activations": "hasNonlinearActivations",
 }
 
 
-def build_gen_params(*, dtype="int8", preset=None,
-                     no_training_convs=False, no_max_pool=False,
-                     no_nonlinear_activations=False, **kwargs):
-    """Build the ``--gemmini-key=value`` args dict from user-facing kwargs."""
+def build_gen_params(config):
+    """Build the ``--gemmini-key=value`` args dict from a GemminiConfig."""
     gemmini_args = {}
 
-    if preset:
-        gemmini_args["preset"] = preset
-    if dtype and not preset:
-        if dtype not in DTYPE_MAP:
-            raise ValueError(f"Unknown dtype {dtype!r}. Choose from: {list(DTYPE_MAP)}")
-        gemmini_args.update(DTYPE_MAP[dtype])
-    elif dtype and preset:
-        if dtype not in DTYPE_MAP:
-            raise ValueError(f"Unknown dtype {dtype!r}. Choose from: {list(DTYPE_MAP)}")
-        gemmini_args.update(DTYPE_MAP[dtype])
+    if config.preset:
+        gemmini_args["preset"] = config.preset
+    if config.dtype:
+        if config.dtype not in DTYPE_MAP:
+            raise ValueError(f"Unknown dtype {config.dtype!r}. Choose from: {list(DTYPE_MAP)}")
+        gemmini_args.update(DTYPE_MAP[config.dtype])
 
-    for py_name, scala_name in _PARAM_MAP.items():
-        val = kwargs.pop(py_name, None)
+    for field in _GEN_FIELDS:
+        val = getattr(config, field)
         if val is not None:
-            gemmini_args[scala_name] = str(val)
+            gemmini_args[_snake_to_camel(field)] = str(val)
 
-    if no_training_convs:
-        gemmini_args["hasTrainingConvs"] = "false"
-    if no_max_pool:
-        gemmini_args["hasMaxPool"] = "false"
-    if no_nonlinear_activations:
-        gemmini_args["hasNonlinearActivations"] = "false"
+    for prop, key in _GEN_PROPS.items():
+        gemmini_args[key] = str(getattr(config, prop))
 
-    if kwargs:
-        raise TypeError(f"Unknown parameters: {', '.join(kwargs)}")
+    for flag, key in _GEN_FLAGS.items():
+        if getattr(config, flag):
+            gemmini_args[key] = "false"
 
     return gemmini_args
 
@@ -365,10 +366,10 @@ Example usage:
     p.add_argument("--tile-rows", type=int, default=None)
     p.add_argument("--tile-columns", type=int, default=None)
     p.add_argument("--dataflow", choices=["OS", "WS", "BOTH"], default=None)
-    p.add_argument("--sp-capacity-kb", type=int, default=None)
-    p.add_argument("--acc-capacity-kb", type=int, default=None)
     p.add_argument("--sp-banks", type=int, default=None)
+    p.add_argument("--sp-bank-entries", type=int, default=None)
     p.add_argument("--acc-banks", type=int, default=None)
+    p.add_argument("--acc-bank-entries", type=int, default=None)
     p.add_argument("--dma-maxbytes", type=int, default=None)
     p.add_argument("--dma-buswidth", type=int, default=None)
     p.add_argument("--max-in-flight-mem-reqs", type=int, default=None)
@@ -386,27 +387,17 @@ def cli_main(argv=None):
     """CLI entry point for Gemmini Verilog generation."""
     args = _parse_args(argv)
 
-    # Build gen_params from CLI args
-    cli_kwargs = {}
-    if args.preset:
-        cli_kwargs["preset"] = args.preset
-    if args.dtype:
-        cli_kwargs["dtype"] = args.dtype
-
-    for py_name in _PARAM_MAP:
-        cli_name = py_name  # argparse stores with underscores
-        val = getattr(args, cli_name, None)
+    # Build GemminiConfig from CLI args, then gen_params from that
+    from gemmini_amaranth.gemmini import GemminiConfig
+    from dataclasses import fields
+    cfg_overrides = {}
+    for f in fields(GemminiConfig):
+        val = getattr(args, f.name, None)
         if val is not None:
-            cli_kwargs[py_name] = val
+            cfg_overrides[f.name] = val
+    config = GemminiConfig(**cfg_overrides)
 
-    if args.no_training_convs:
-        cli_kwargs["no_training_convs"] = True
-    if args.no_max_pool:
-        cli_kwargs["no_max_pool"] = True
-    if args.no_nonlinear_activations:
-        cli_kwargs["no_nonlinear_activations"] = True
-
-    gen_params = build_gen_params(**cli_kwargs)
+    gen_params = build_gen_params(config)
     validate_params(gen_params)
 
     if args.output_dir is not None:
