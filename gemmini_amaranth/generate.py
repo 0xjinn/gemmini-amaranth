@@ -12,58 +12,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# ---------------------------------------------------------------------------
-# Data type mapping: dtype -> Chisel gemmini-key args
-# ---------------------------------------------------------------------------
-DTYPE_MAP = {
-    "int8": {
-        "inputTypeFamily": "sint",
-        "inputWidth": "8",
-        "accWidth": "32",
-        "spatialOutputWidth": "20",
-    },
-    "int16": {
-        "inputTypeFamily": "sint",
-        "inputWidth": "16",
-        "accWidth": "32",
-        "spatialOutputWidth": "32",
-    },
-    "int32": {
-        "inputTypeFamily": "sint",
-        "inputWidth": "32",
-        "accWidth": "32",
-        "spatialOutputWidth": "32",
-    },
-    "fp32": {
-        "inputTypeFamily": "float",
-        "inputExpWidth": "8",
-        "inputSigWidth": "24",
-        "accExpWidth": "8",
-        "accSigWidth": "24",
-    },
-    "fp16": {
-        "inputTypeFamily": "float",
-        "inputExpWidth": "5",
-        "inputSigWidth": "11",
-        "accExpWidth": "8",
-        "accSigWidth": "24",
-    },
-    "bf16": {
-        "inputTypeFamily": "float",
-        "inputExpWidth": "8",
-        "inputSigWidth": "8",
-        "accExpWidth": "8",
-        "accSigWidth": "24",
-    },
-    "dummy": {
-        "inputTypeFamily": "dummy",
-        "inputWidth": "8",
-        "accWidth": "32",
-        "spatialOutputWidth": "20",
-    },
-}
-
-PRESETS = ["default", "chip", "largeChip", "lean", "fp32", "fp16", "bf16"]
+PRESETS = ["default", "chip", "largeChip", "lean"]
 
 # ---------------------------------------------------------------------------
 # Chisel directory — bundled as package data in gemmini_amaranth/chisel/
@@ -128,39 +77,28 @@ def validate_params(gemmini_args):
     if dim & (dim - 1) != 0:
         errors.append(f"Array dimension must be power of 2, got {dim}")
 
-    family = gemmini_args.get("inputTypeFamily", "sint")
-    if family == "float":
-        input_width = int(gemmini_args.get("inputExpWidth", "8")) + int(gemmini_args.get("inputSigWidth", "24"))
-    else:
-        input_width = int(gemmini_args.get("inputWidth", "8"))
-
+    input_width = int(gemmini_args.get("inputWidth", "8"))
     sp_banks = int(gemmini_args.get("spBanks", "4"))
     acc_banks = int(gemmini_args.get("accBanks", "2"))
     sp_kb = int(gemmini_args.get("spCapacityKB", "256"))
     acc_kb = int(gemmini_args.get("accCapacityKB", "64"))
 
     sp_width = block_cols * input_width
-    if sp_width > 0:
-        sp_bank_entries = sp_kb * 1024 * 8 // (sp_banks * sp_width)
-        if sp_bank_entries == 0:
-            errors.append(f"Scratchpad too small: {sp_kb}KB / {sp_banks} banks / {sp_width}-bit rows = 0 entries")
-        elif sp_bank_entries & (sp_bank_entries - 1) != 0:
-            errors.append(f"SP bank entries must be power of 2, got {sp_bank_entries}")
-        elif sp_bank_entries % dim != 0:
-            errors.append(f"SP bank entries ({sp_bank_entries}) must be divisible by array dim ({dim})")
+    sp_bank_entries = sp_kb * 1024 * 8 // (sp_banks * sp_width)
+    if sp_bank_entries == 0:
+        errors.append(f"Scratchpad too small: {sp_kb}KB / {sp_banks} banks / {sp_width}-bit rows = 0 entries")
+    elif sp_bank_entries & (sp_bank_entries - 1) != 0:
+        errors.append(f"SP bank entries must be power of 2, got {sp_bank_entries}")
+    elif sp_bank_entries % dim != 0:
+        errors.append(f"SP bank entries ({sp_bank_entries}) must be divisible by array dim ({dim})")
 
-    if family == "float":
-        acc_width = int(gemmini_args.get("accExpWidth", "8")) + int(gemmini_args.get("accSigWidth", "24"))
-    else:
-        acc_width = int(gemmini_args.get("accWidth", "32"))
-
+    acc_width = int(gemmini_args.get("accWidth", "32"))
     acc_row_width = block_cols * acc_width
-    if acc_row_width > 0:
-        acc_bank_entries = acc_kb * 1024 * 8 // (acc_banks * acc_row_width)
-        if acc_bank_entries == 0:
-            errors.append(f"Accumulator too small: {acc_kb}KB / {acc_banks} banks / {acc_row_width}-bit rows = 0 entries")
-        elif acc_bank_entries % dim != 0:
-            errors.append(f"ACC bank entries ({acc_bank_entries}) must be divisible by array dim ({dim})")
+    acc_bank_entries = acc_kb * 1024 * 8 // (acc_banks * acc_row_width)
+    if acc_bank_entries == 0:
+        errors.append(f"Accumulator too small: {acc_kb}KB / {acc_banks} banks / {acc_row_width}-bit rows = 0 entries")
+    elif acc_bank_entries % dim != 0:
+        errors.append(f"ACC bank entries ({acc_bank_entries}) must be divisible by array dim ({dim})")
 
     if errors:
         raise ValueError("Configuration validation failed:\n" + "\n".join(f"  - {e}" for e in errors))
@@ -199,16 +137,12 @@ _GEN_FLAGS = {
 }
 
 
-def build_gen_params(config):
+def build_gen_params(config, preset=None):
     """Build the ``--gemmini-key=value`` args dict from a GemminiConfig."""
     gemmini_args = {}
 
-    if config.preset:
-        gemmini_args["preset"] = config.preset
-    if config.dtype:
-        if config.dtype not in DTYPE_MAP:
-            raise ValueError(f"Unknown dtype {config.dtype!r}. Choose from: {list(DTYPE_MAP)}")
-        gemmini_args.update(DTYPE_MAP[config.dtype])
+    if preset:
+        gemmini_args["preset"] = preset
 
     for field in _GEN_FIELDS:
         val = getattr(config, field)
@@ -262,7 +196,7 @@ def run_sbt(sbt_cmd, chisel_dir, verbose=False):
         raise subprocess.CalledProcessError(result.returncode, sbt_cmd, msg)
 
 
-def augment_config_json(gemmini_args, output_dir, dtype=None):
+def augment_config_json(gemmini_args, output_dir):
     """Augment the Scala-generated gemmini_config.json with Python-side metadata."""
     config_path = Path(output_dir) / "gemmini_config.json"
     if config_path.exists():
@@ -272,8 +206,6 @@ def augment_config_json(gemmini_args, output_dir, dtype=None):
         config = {}
 
     config["generator"] = "GemminiGenerator"
-    if dtype:
-        config["dtype"] = dtype
     config["cliParameters"] = gemmini_args
     config["outputDir"] = str(output_dir)
 
@@ -331,14 +263,7 @@ def generate_verilog(gen_params, output_dir, verbose=False):
         print(f"Generated header:  {header_file} ({header_file.stat().st_size:,} bytes)")
         print(f"Generated config:  {config_file} ({config_file.stat().st_size:,} bytes)")
 
-    # Infer dtype from gen_params for the JSON augmentation
-    dtype = None
-    for dtype_name, dtype_args in DTYPE_MAP.items():
-        if all(gen_params.get(k) == v for k, v in dtype_args.items()):
-            dtype = dtype_name
-            break
-
-    augment_config_json(gen_params, output_dir, dtype=dtype)
+    augment_config_json(gen_params, output_dir)
     print("Done.")
 
 
@@ -352,15 +277,13 @@ def _parse_args(argv=None):
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""\
 Example usage:
-    gemmini-generate                                          # defaults: int8, 16x16, BOTH
+    gemmini-generate                                          # defaults: int8, 16x16
     gemmini-generate --preset chip                            # named preset
-    gemmini-generate --dtype fp32 --mesh-rows 4 --mesh-columns 4
-    gemmini-generate --dtype bf16 --dataflow WS --output-dir build/bf16_ws
+    gemmini-generate --mesh-rows 8 --mesh-columns 8
     gemmini-generate --dry-run                                # show sbt command only
 """,
     )
     p.add_argument("--preset", choices=PRESETS, help="Named preset config")
-    p.add_argument("--dtype", choices=list(DTYPE_MAP.keys()), default=None, help="Data type (default: int8)")
     p.add_argument("--mesh-rows", type=int, default=None)
     p.add_argument("--mesh-columns", type=int, default=None)
     p.add_argument("--tile-rows", type=int, default=None)
@@ -397,7 +320,7 @@ def cli_main(argv=None):
             cfg_overrides[f.name] = val
     config = GemminiConfig(**cfg_overrides)
 
-    gen_params = build_gen_params(config)
+    gen_params = build_gen_params(config, preset=args.preset)
     validate_params(gen_params)
 
     if args.output_dir is not None:

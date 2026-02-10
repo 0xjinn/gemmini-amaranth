@@ -20,7 +20,6 @@ class GemminiConfig:
     mesh_columns: int = 16
     tile_rows: int = 1
     tile_columns: int = 1
-    dtype: str = "int8"
     input_width: int = 8
     acc_width: int = 32
     dataflow: str = "WS"
@@ -28,13 +27,12 @@ class GemminiConfig:
     sp_bank_entries: int = 256
     acc_banks: int = 2
     acc_bank_entries: int = 64
-    dma_maxbytes: int | None = None
+    dma_maxbytes: int = 64
     dma_buswidth: int = 128
-    max_in_flight_mem_reqs: int | None = None
+    max_in_flight_mem_reqs: int = 16
     no_training_convs: bool = False
     no_max_pool: bool = False
     no_nonlinear_activations: bool = False
-    preset: str | None = None
 
     # wrapper config
     vaddr_width: int = 32
@@ -70,12 +68,6 @@ class GemminiConfig:
 
     @property
     def beat_bytes(self): return self.dma_buswidth // 8
-
-    @property
-    def dma_maxbytes_resolved(self): return self.dma_maxbytes or 64
-
-    @property
-    def max_in_flight_mem_reqs_resolved(self): return self.max_in_flight_mem_reqs or 16
 
     @property
     def write_data_width(self):
